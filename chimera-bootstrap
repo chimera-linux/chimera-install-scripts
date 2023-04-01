@@ -199,7 +199,7 @@ make_reposf() {
     fi
 }
 
-if [ "$LOCAL_INSTALL" -eq 1 ]; then
+if [ "$INSTALL_LOCAL" -eq 1 ]; then
     msg "Copying system to ${ROOT_DIR}..."
     # copy over the source system as closely as possible
     tar -cf - -C "$INSTALL_LOCAL_PATH" . | tar -xpf - -C "$ROOT_DIR"
@@ -221,6 +221,7 @@ if [ $# -gt 0 ]; then
     # make it safe to install other things
     mount_pseudo
 
+    msg "Installing additional packages..."
     # install the other desired packages
     "$INSTALL_APK" --root "$ROOT_DIR" --keys-dir "$INSTALL_KEYS_DIR" \
         --repositories-file "$REPOSF" $INSTALL_APK_ARGS add "$@"
