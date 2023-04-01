@@ -1,0 +1,210 @@
+#!/bin/sh
+#
+# Chimera Linux fstab(5) generator, mostly compatible with arch genfstab
+#
+# Copyright 2023 Daniel "q66" Kolesa
+#
+# License: BSD-2-Clause
+#
+
+readonly PROGNAME=$(basename "$0")
+
+msg() {
+    printf "\033[1m$@\n\033[m"
+}
+
+die() {
+    msg "ERROR: $@"
+    exit 1
+}
+
+usage() {
+    cat << EOF
+Usage: $PROGNAME [opts] root
+
+Options:
+  -p      Do not include pseudo-filesystems (default).
+  -P      Do include pseudo-filesystems.
+  -L      Use labels for identifiers (-t LABEL).
+  -U      Use UUIDs for identifiers (-t UUID).
+  -t TAG  Use TAG for identifiers (LABEL, UUID, PARTLABEL, PARTUUID).
+  -h      Print this message.
+EOF
+    exit ${1:=1}
+}
+
+INC_PSEUDOFS=0
+IDTAG=
+
+while getopts "pPLUt:h" opt; do
+    case "$opt" in
+        p) INC_PSEUDOFS=0 ;;
+        P) INC_PSEUDOFS=1 ;;
+        L) IDTAG=LABEL ;;
+        U) IDTAG=UUID ;;
+        t) IDTAG=$(echo "${OPTARG}" | tr '[:lower:]' '[:upper:]') ;;
+        h) usage 0 ;;
+        *) usage 1 ;;
+    esac
+done
+
+shift $((OPTIND - 1))
+
+if ! command -v mountpoint > /dev/null 2>&1; then
+    die "mountpoint must be present"
+fi
+
+if ! command -v findmnt > /dev/null 2>&1; then
+    die "findmnt must be present"
+fi
+
+ROOT_PATH="$1"
+
+[ -n "$ROOT_PATH" ] || die "no root given"
+mountpoint -q "$ROOT_PATH" > /dev/null 2>&1 || die "root is not a mountpoint"
+
+# make absolute and canonical once we know it exists
+ROOT_PATH=$(realpath "$ROOT_PATH")
+
+# find known pseudo-filesystems
+PSEUDO_FS=$(findmnt --pseudo -Uno fstype | sort | uniq | tr '\n' ' ')
+
+# known filesystems with fsck
+FSCK_FS="cramfs exfat ext2 ext3 ext4 jfs minix msdos reiserfs vfat xfs"
+
+is_pseudo() {
+    for pfs in $PSEUDO_FS; do
+        if [ "$1" = "$pfs" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+is_fsck() {
+    for fsn in $FSCK_FS; do
+        if [ "$fstype" = "$fsn" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+dm_name() {
+    read dmn < "/sys/class/block/${1#/dev/}/dm/name"
+    if [ -n "$dmn" ]; then
+        echo "/dev/mapper/$dmn"
+    fi
+}
+
+src_name() {
+    name=
+    if [ -n "$IDTAG" ]; then
+        name=$(lsblk -nro $IDTAG "$1" 2>/dev/null)
+    fi
+    if [ -n "$name" ]; then
+        echo "${IDTAG}=${name}"
+    else
+        echo "$1"
+    fi
+}
+
+clean_opts() {
+    OLD_IFS=$IFS
+    IFS=,
+    first=1
+    for opt in $1; do
+        case $opt in
+            relatime) continue ;; # the default
+            seclabel) continue ;; # may not be supported by target kernel
+        esac
+        if [ "$fstype" = "f2fs" ]; then
+            # kconfig options
+            case "$opt" in
+                noacl|acl|nouser_xattr|user_xattr) continue ;;
+            esac
+        fi
+        [ -n "$first" ] || printf ","
+        first=
+        printf "%s" "$opt"
+    done
+    IFS=$OLD_IFS
+}
+
+# dump the mounts for the given root
+findmnt -Rcenruv -o source,target,fstype,fsroot,options "$ROOT_PATH" | \
+  while read -r source target fstype fsroot options; do
+    # exclude pseudo-fs early on if requested
+    if [ "$INC_PSEUDOFS" -eq 0 ] && is_pseudo "$fstype"; then
+        continue
+    fi
+
+    # exclude zfs, should never be in fstab
+    # also filter out other filesystems that should not be here
+    case "$fstype" in
+        zfs|autofs|fuseblk|binfmt_misc) continue ;;
+    esac
+
+    # get real target
+    if [ "$ROOT_PATH" != "/" ]; then
+        if [ "$target" = "$ROOT_PATH" ]; then
+            target=/
+        else
+            target=${target#$ROOT_PATH}
+        fi
+    fi
+
+    # always exclude filesystems under /run; they are post-boot
+    case "$target" in
+        /run/*) continue ;;
+        /) pass=1 ;;
+        *) pass=2 ;;
+    esac
+
+    # set pass=0 for filesystems without fsck
+    if ! is_fsck "$fstype"; then
+        pass=0
+    fi
+
+    # exclude bind-mounts; hard to get right, the user can set it up manually
+    if [ "$fsroot" != "/" -a "$fstype" != "btrfs" ]; then
+        continue
+    fi
+
+    # clean up options
+    options=$(clean_opts "$options")
+
+    source=$(src_name "$source")
+    echo "$source $target $fstype $options 0 $pass"
+done
+
+# swaps
+{
+    # header
+    read _
+    # read the lines
+    while read -r dev type _ _ prio; do
+        opts=defaults
+        if [ "$prio" -ge 0 ]; then
+            opts="$opts,pri=$prio"
+        fi
+        # skip deleted by the kernel
+        case "$dev" in
+            *"(deleted)") continue ;;
+            /dev/dm-*)
+                dev=$(dm_name "$dev")
+                if [ -z "$dev" ]; then
+                    die "could not resolve device mapper name of $dev"
+                fi
+                ;;
+            *)
+                if [ -f "$dev" ]; then
+                    if [ "$ROOT_PATH" != "/" ]; then
+                        dev=${dev#$ROOT_PATH}
+                    fi
+                fi
+        esac
+        dev=$(src_name "$dev")
+        echo "$dev none swap $opts 0 0"
+    done
+} < /proc/swaps

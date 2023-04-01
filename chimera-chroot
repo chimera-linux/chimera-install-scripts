@@ -1,0 +1,102 @@
+#!/bin/sh
+#
+# Chimera Linux chroot script
+#
+# Copyright 2023 Daniel "q66" Kolesa
+#
+# License: BSD-2-Clause
+#
+
+readonly PROGNAME=$(basename "$0")
+
+MOUNTED_PSEUDO=
+ROOT_DIR=
+
+do_trymount() {
+    if mountpoint -q "${ROOT_DIR}/$1" > /dev/null 2>&1; then
+        return 0
+    fi
+    mount --rbind "/$1" "${ROOT_DIR}/$1" || die "Failed to mount ${1}fs"
+    MOUNTED_PSEUDO="${MOUNTED_PSEUDO} $1"
+}
+
+mount_pseudo() {
+    do_trymount dev
+    do_trymount proc
+    do_trymount sys
+    do_trymount tmp
+}
+
+umount_pseudo() {
+    sync
+    for mnt in ${MOUNTED_PSEUDO}; do
+        [ -n "$mnt" ] || continue
+        umount -R -f "${ROOT_DIR}/$mnt" > /dev/null 2>&1
+    done
+}
+
+msg() {
+    printf "\033[1m$@\n\033[m"
+}
+
+error_sig() {
+    umount_pseudo
+    [ -n "$REPOSF" ] && rm -f "$REPOSF"
+    [ -n "$EREPOSF" ] && rm -f "$EREPOSF"
+    exit ${1:=0}
+}
+
+trap 'error_sig $? $LINENO' INT TERM 0
+
+die() {
+    echo "ERROR: $@"
+    error_sig 1 $LINENO
+}
+
+usage() {
+    cat << EOF
+Usage: $PROGNAME [opts] root [command] [args]...
+
+This script chroots into the given root, much like the actual chroot
+command. However, it also ensures that pseudo-filesystems are mounted
+and other things necessary for remote installation manipulation.
+
+Options:
+  -h  Print this message.
+EOF
+    exit ${1:=1}
+}
+
+# ensure we run as root
+if [ "$(id -u)" != "0" ]; then
+    die "Must run this as root."
+fi
+
+while getopts "h" opt; do
+    case "$opt" in
+        h) usage 0 ;;
+        *) usage 1 ;;
+    esac
+done
+
+shift $((OPTIND - 1))
+
+ROOT_DIR="$1"
+shift
+
+# ensure the target exists
+[ -d "$ROOT_DIR" ] || die "root directory does not exist"
+
+mount_pseudo
+
+if [ -d "${ROOT_DIR}/etc" -a -f /etc/resolv.conf ]; then
+    rm -f "${ROOT_DIR}/etc/resolv.conf"
+    cp /etc/resolv.conf "${ROOT_DIR}/etc"
+fi
+
+chroot "$ROOT_DIR" "$@"
+RC=$?
+
+umount_pseudo
+
+exit $RC
