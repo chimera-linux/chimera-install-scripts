@@ -11,6 +11,8 @@ readonly PROGNAME=$(basename "$0")
 
 MOUNTED_PSEUDO=
 ROOT_DIR=
+RESOLV_SAVED=
+RESOLV_REPLACED=
 
 do_trymount() {
     if mountpoint -q "${ROOT_DIR}/$1" > /dev/null 2>&1; then
@@ -35,11 +37,42 @@ umount_pseudo() {
     done
 }
 
+replace_resolv() {
+    # do not touch if target /etc is missing or if we do not have resolv.conf
+    [ -d "${ROOT_DIR}/etc" -a -f /etc/resolv.conf ] || return 0
+    RESOLV_REPLACED="${ROOT_DIR}/etc/resolv.conf"
+    # save the existing one if needed
+    if [ -e "$RESOLV_REPLACED" -o -L "$RESOLV_REPLACED" ]; then
+        RESOLV_SAVED="${ROOT_DIR}/etc/resolv.conf.chimera-chroot.$$"
+        # make space, this should not do anything
+        rm -f "$RESOLV_SAVED" > /dev/null 2>&1
+        # try moving, on failure unset saved
+        if ! mv "$RESOLV_REPLACED" "$RESOLV_SAVED" > /dev/null 2>&1; then
+            RESOLV_SAVED=
+            RESOLV_REPLACED=
+            return 0
+        fi
+    fi
+    # now replace it
+    cp /etc/resolv.conf "$RESOLV_REPLACED" > /dev/null 2>&1
+}
+
+restore_resolv() {
+    # restore best we can
+    [ -n "$RESOLV_REPLACED" ] && \
+        rm -f "$RESOLV_REPLACED" > /dev/null 2>&1
+    [ -n "$RESOLV_SAVED" ] && \
+        mv "$RESOLV_SAVED" "$RESOLV_REPLACED" > /dev/null 2>&1
+    RESOLV_SAVED=
+    RESOLV_REPLACED=
+}
+
 msg() {
     printf "\033[1m$@\n\033[m"
 }
 
 error_sig() {
+    restore_resolv
     umount_pseudo
     [ -n "$REPOSF" ] && rm -f "$REPOSF"
     [ -n "$EREPOSF" ] && rm -f "$EREPOSF"
@@ -62,6 +95,7 @@ command. However, it also ensures that pseudo-filesystems are mounted
 and other things necessary for remote installation manipulation.
 
 Options:
+  -r  Do not touch resolv.conf.
   -h  Print this message.
 EOF
     exit ${1:=1}
@@ -72,8 +106,11 @@ if [ "$(id -u)" != "0" ]; then
     die "Must run this as root."
 fi
 
-while getopts "h" opt; do
+REPLACE_RESOLV=1
+
+while getopts "rh" opt; do
     case "$opt" in
+        r) REPLACE_RESOLV=0 ;;
         h) usage 0 ;;
         *) usage 1 ;;
     esac
@@ -89,14 +126,14 @@ shift
 
 mount_pseudo
 
-if [ -d "${ROOT_DIR}/etc" -a -f /etc/resolv.conf ]; then
-    rm -f "${ROOT_DIR}/etc/resolv.conf"
-    cp /etc/resolv.conf "${ROOT_DIR}/etc"
+if [ "$REPLACE_RESOLV" -eq 1 ]; then
+    replace_resolv
 fi
 
 chroot "$ROOT_DIR" "$@"
 RC=$?
 
+restore_resolv
 umount_pseudo
 
 exit $RC
