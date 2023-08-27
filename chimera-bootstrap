@@ -167,7 +167,7 @@ fi
 # the chimera-bootstrap command
 #
 if [ "$INSTALL_FORCE" -eq 0 ]; then
-    for x in $(find "${ROOT_DIR}" '!' -type d); do
+    for x in $(find "${ROOT_DIR}" '!' -type d -print -quit); do
         die "root directory is non-empty"
     done
 fi
