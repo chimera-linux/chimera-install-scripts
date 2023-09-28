@@ -236,7 +236,7 @@ if [ $# -gt 0 ]; then
 fi
 
 msg "Chimera bootstrap successful at ${ROOT_DIR}."
-echo "You can use chimera-live-chroot to get a shell in the system."
+echo "You can use chimera-chroot to get a shell in the system."
 echo "Please perform all post-installation steps now (bootloader etc.)."
 
 exit 0
