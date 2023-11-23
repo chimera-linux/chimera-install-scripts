@@ -130,6 +130,9 @@ if [ "$REPLACE_RESOLV" -eq 1 ]; then
     replace_resolv
 fi
 
+if [ -f "${ROOT_DIR}/etc/chimera-release" ]; then
+    export SHELL=/bin/sh
+fi
 chroot "$ROOT_DIR" "$@"
 RC=$?
 
