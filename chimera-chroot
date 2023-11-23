@@ -130,7 +130,7 @@ if [ "$REPLACE_RESOLV" -eq 1 ]; then
     replace_resolv
 fi
 
-chroot "$ROOT_DIR" "$@"
+SHELL=/bin/sh chroot "$ROOT_DIR" "$@"
 RC=$?
 
 restore_resolv
