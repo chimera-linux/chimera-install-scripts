@@ -91,7 +91,7 @@ INSTALL_APK="apk"
 INSTALL_FORCE=0
 INSTALL_IGNORE_REPOS=0
 INSTALL_KEYS_DIR="/etc/apk/keys"
-INSTALL_APK_ARGS=
+INSTALL_APK_ARGS="--no-interactive"
 
 # ensure we run as root
 if [ "$(id -u)" != "0" ]; then
