@@ -133,7 +133,7 @@ fi
 if [ -f "${ROOT_DIR}/etc/chimera-release" ]; then
     export SHELL=/bin/sh
 fi
-chroot "$ROOT_DIR" "$@"
+PS1="(chroot) $PS1" chroot "$ROOT_DIR" "$@"
 RC=$?
 
 restore_resolv
