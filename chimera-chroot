@@ -19,6 +19,7 @@ do_trymount() {
         return 0
     fi
     mount --rbind "/$1" "${ROOT_DIR}/$1" || die "Failed to mount ${1}fs"
+    mount --make-rslave "${ROOT_DIR}/$1" || die "Failed to make ${1} rslave"
     MOUNTED_PSEUDO="${MOUNTED_PSEUDO} $1"
 }
 
