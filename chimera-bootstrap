@@ -86,7 +86,7 @@ EOF
 }
 
 INSTALL_LOCAL=0
-INSTALL_LOCAL_PATH="/run/live/rootfs/filesystem.squashfs"
+INSTALL_LOCAL_PATH=
 INSTALL_APK="apk"
 INSTALL_FORCE=0
 INSTALL_IGNORE_REPOS=0
@@ -140,6 +140,16 @@ shift
 if [ $# -eq 0 -a "$INSTALL_LOCAL" -eq 0 ]; then
     # set a default for network installations
     set -- "base-full"
+fi
+
+# determine the default local install path
+if [ "$INSTALL_LOCAL" -eq 1 -a -z "$INSTALL_LOCAL_PATH" ]; then
+    for mdir in /run/live/rootfs/filesystem.*; do
+        if [ -d "$mdir" ]; then
+            INSTALL_LOCAL_PATH="$mdir"
+            break
+        fi
+    done
 fi
 
 if [ "$INSTALL_LOCAL" -eq 1 -a ! -d "$INSTALL_LOCAL_PATH" ]; then
