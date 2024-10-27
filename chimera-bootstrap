@@ -240,12 +240,6 @@ if [ $# -gt 0 ]; then
         die "package installation failed"
     fi
 
-    if [ "$INSTALL_LOCAL" -eq 1 ]; then
-        msg "Cleaning up packages..."
-        "$INSTALL_APK" --root "$ROOT_DIR" --keys-dir "$INSTALL_KEYS_DIR" \
-            --repositories-file "$REPOSF" $INSTALL_APK_ARGS del base-live
-    fi
-
     umount_pseudo
     rm -f "$REPOSF" "$EREPOSF"
     unset REPOSF EREPOSF
