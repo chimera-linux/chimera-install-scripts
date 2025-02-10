@@ -74,6 +74,7 @@ Options:
   -l       Perform a local installation.
   -L PATH  Override the local installation source root.
   -a PATH  Use a different apk binary.
+  -C DIR   Cache the packages into DIR (absolute path, no spaces).
   -i       Run apk in interactive mode.
   -I       Ignore system repositories.
   -r REPO  Specify additional package repository.
@@ -90,7 +91,7 @@ INSTALL_LOCAL_PATH=
 INSTALL_APK="apk"
 INSTALL_FORCE=0
 INSTALL_IGNORE_REPOS=0
-INSTALL_KEYS_DIR="/etc/apk/keys"
+INSTALL_KEYS_DIR="/usr/lib/apk/keys"
 INSTALL_APK_ARGS="--no-interactive"
 
 # ensure we run as root
@@ -98,8 +99,9 @@ if [ "$(id -u)" != "0" ]; then
     die "Must run this as root."
 fi
 
-while getopts "lL:a:iIr:k:fuh" opt; do
+while getopts "C:lL:a:iIr:k:fuh" opt; do
     case "$opt" in
+        C) INSTALL_APK_ARGS="$INSTALL_APK_ARGS --cache-packages --cache-dir $OPTARG" ;;
         l) INSTALL_LOCAL=1 ;;
         L) INSTALL_LOCAL_PATH="$OPTARG" ;;
         a) INSTALL_APK="$OPTARG" ;;
@@ -199,7 +201,19 @@ make_reposf() {
         cat /etc/apk/repositories >> "$REPOSF"
     fi
 
+    tmprepos=$(mktemp -d) || die "failed to create a temporary repo dir"
+
+    for f in /usr/lib/apk/repositories.d/*; do
+        [ -f "$f" ] || continue
+        cp "$f" "$tmprepos"
+    done
+
     for f in /etc/apk/repositories.d/*; do
+        [ -f "$f" ] || continue
+        cp "$f" "$tmprepos"
+    done
+
+    for f in "$tmptepos"/*; do
         [ -f "$f" ] || continue
         cat "$f" >> "$REPOSF"
     done
@@ -207,6 +221,8 @@ make_reposf() {
     if [ -n "$EREPOSF" ]; then
         cat "$EREPOSF" >> "$REPOSF"
     fi
+
+    rm -rf "$tmprepos"
 }
 
 if [ "$INSTALL_LOCAL" -eq 1 ]; then
