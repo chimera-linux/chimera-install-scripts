@@ -20,6 +20,7 @@ do_trymount() {
     fi
     mkdir -m "$2" -p "${ROOT_DIR}/$1"
     mount --rbind "/$1" "${ROOT_DIR}/$1" || die "Failed to mount ${1}fs"
+    mount --make-rslave "${ROOT_DIR}/$1" || die "Failed to make ${1} rslave"
     MOUNTED_PSEUDO="${MOUNTED_PSEUDO} $1"
 }
 
@@ -270,6 +271,8 @@ if [ $# -gt 0 ]; then
     rm -f "$REPOSF" "$EREPOSF"
     unset REPOSF EREPOSF
 fi
+
+umount_pseudo
 
 msg "Chimera bootstrap successful at ${ROOT_DIR}."
 echo "You can use chimera-chroot to get a shell in the system."
