@@ -18,15 +18,16 @@ do_trymount() {
     if mountpoint -q "${ROOT_DIR}/$1" > /dev/null 2>&1; then
         return 0
     fi
+    mkdir -m "$2" -p "${ROOT_DIR}/$1"
     mount --rbind "/$1" "${ROOT_DIR}/$1" || die "Failed to mount ${1}fs"
     MOUNTED_PSEUDO="${MOUNTED_PSEUDO} $1"
 }
 
 mount_pseudo() {
-    do_trymount dev
-    do_trymount proc
-    do_trymount sys
-    do_trymount tmp
+    do_trymount dev 755
+    do_trymount proc 555
+    do_trymount sys 555
+    do_trymount tmp 1777
 }
 
 umount_pseudo() {
@@ -74,7 +75,7 @@ Options:
   -l       Perform a local installation.
   -L PATH  Override the local installation source root.
   -a PATH  Use a different apk binary.
-  -C DIR   Cache the packages into DIR (absolute path, no spaces).
+  -C DIR   Cache the packages into DIR (no spaces in absolute path).
   -i       Run apk in interactive mode.
   -I       Ignore system repositories.
   -r REPO  Specify additional package repository.
@@ -93,6 +94,7 @@ INSTALL_FORCE=0
 INSTALL_IGNORE_REPOS=0
 INSTALL_KEYS_DIR="/usr/lib/apk/keys"
 INSTALL_APK_ARGS="--no-interactive"
+CACHE_DIR=
 
 # ensure we run as root
 if [ "$(id -u)" != "0" ]; then
@@ -101,7 +103,7 @@ fi
 
 while getopts "C:lL:a:iIr:k:fuh" opt; do
     case "$opt" in
-        C) INSTALL_APK_ARGS="$INSTALL_APK_ARGS --cache-packages --cache-dir $OPTARG" ;;
+        C) CACHE_DIR="$OPTARG" ;;
         l) INSTALL_LOCAL=1 ;;
         L) INSTALL_LOCAL_PATH="$OPTARG" ;;
         a) INSTALL_APK="$OPTARG" ;;
@@ -187,6 +189,12 @@ fi
 make_reposf() {
     [ -n "$REPOSF" ] && return 0
 
+    if [ -n "$CACHE_DIR" ]; then
+        mkdir -p "$CACHE_DIR"
+        CACHE_DIR=$(realpath "$CACHE_DIR")
+        INSTALL_APK_ARGS="$INSTALL_APK_ARGS --cache-packages --cache-dir $CACHE_DIR"
+    fi
+
     REPOSF=$(mktemp)
     [ $? -eq 0 ] || die "failed to generate a repositories file"
 
@@ -213,7 +221,7 @@ make_reposf() {
         cp "$f" "$tmprepos"
     done
 
-    for f in "$tmptepos"/*; do
+    for f in "$tmprepos"/*; do
         [ -f "$f" ] || continue
         cat "$f" >> "$REPOSF"
     done
@@ -231,6 +239,8 @@ if [ "$INSTALL_LOCAL" -eq 1 ]; then
     tar -cf - -C "$INSTALL_LOCAL_PATH" . | tar -xpf - -C "$ROOT_DIR"
 else
     make_reposf
+    # make it safe to install other things
+    mount_pseudo
     msg "Installing minimal system at ${ROOT_DIR}..."
     # install chimerautils
     "$INSTALL_APK" --root "$ROOT_DIR" --keys-dir "$INSTALL_KEYS_DIR" \
