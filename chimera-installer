@@ -1,0 +1,685 @@
+#!/bin/sh
+#
+# Chimera Linux installer
+#
+# Copyright 2025 q66 <q66@chimera-linux.org>
+#
+# License: BSD-2-Clause
+#
+
+trap "die" INT TERM QUIT
+
+# configuration handling
+
+config_get() {
+    local pstr
+    pstr="^INSTALL_CONFIG_${1}="
+    env | grep "$pstr" | sed "s,${pstr},,"
+}
+
+config_set() {
+    eval export INSTALL_CONFIG_${1}="${2}"
+}
+
+config_set_answer() {
+    EVAL=$(cat "$ANSWER_FILE")
+    eval export INSTALL_CONFIG_${1}="$EVAL"
+    unset EVAL
+}
+
+config_is() {
+    test "$(config_get $1)" = "$2"
+}
+
+config_has() {
+    test -n "$(config_get $1)"
+}
+
+config_load() {
+    for evar in $(grep "^INSTALL_CONFIG_" "$1"); do
+        EKEY=${evar%%=*}
+        EVAL=${evar#*=}
+        eval export $EKEY="$EVAL"
+        unset EKEY EVAL
+    done
+}
+
+config_dump() {
+    env | grep "^INSTALL_CONFIG_" | sort
+}
+
+# utilities
+
+# for dialog
+ANSWER_FILE=$(mktemp /tmp/chimera-installer.XXXXXX || exit 1)
+DUMP_FILE=$(mktemp /tmp/chimera-installer-tmp.XXXXXX || exit 1)
+
+die() {
+    rm -f "$ANSWER_FILE"
+    rm -f "$DUMP_FILE"
+    if [ -z "$1" ]; then
+        exit 0
+    fi
+    echo "$1" >&2
+    exit 1
+}
+
+get_drives() {
+    # matches physical drives (SATA, NVMe etc.)
+    for dev in $(ls /sys/block | grep -E '^([sv]|xv)d|mmcblk|nvme'); do
+        echo "/dev/${dev}"
+        size=$(cat /sys/block/${dev}/size)
+        sectsz=$(cat /sys/block/${dev}/queue/hw_sector_size)
+        sizegb=$((${size} * ${sectsz} / 1024 / 1024 / 1024))
+        echo "size:${sizegb},raw_size:${size},sector_size:${sectsz}"
+    done
+    unset dev size sectsz sizegb
+}
+
+get_blkinfo() {
+    if [ ! -b "$1" ]; then
+        return
+    fi
+    fstype=$(lsblk -nfr -o fstype "$1" | head -n1)
+    [ "$fstype" = "iso9660" ] && return
+    [ "$fstype" = "crypto_LUKS" ] && return
+    [ "$fstype" = "LVM2_member" ] && return
+    fssize=$(lsblk -nr -o fssize "$1" | head -n1)
+
+    echo "$1"
+    echo "size:${fssize:-unknown},fstype:${fstype:-none}"
+
+    unset fstype
+    unset fssize
+}
+
+get_partitions() {
+    # physical drives first
+    set -- $(get_drives)
+    while [ $# -ne 0 ]; do
+        diskn=$(basename "$1")
+        shift 2
+        for part in /sys/block/${diskn}/${diskn}*; do
+            [ -d "$part" ] || continue
+            get_blkinfo "/dev/${part}"
+        done
+    done
+
+    # device mapper next
+    for part in /dev/mapper/*; do
+        get_blkinfo "$part"
+    done
+
+    # now mdadm
+    for part in $(ls -d /dev/md* 2>/dev/null | grep '[0-9]'); do
+        part=$(basename "$part")
+        if ! cat /proc/mdstat | grep -qw "$part"; then
+            continue
+        fi
+        get_blkinfo "/dev/${part}"
+    done
+
+    unset diskn part
+}
+
+_get_supported_fsdev() {
+    for fs in $(grep -v '^nodev' /proc/filesystems); do
+        case "$fs" in
+            fuse*) continue ;;
+            *) echo "$fs" ;;
+        esac
+    done
+
+    unset fs
+}
+
+_get_supported_fsall() {
+    _get_supported_fsdev
+
+    # zfs is nodev and special but we want to include it
+    if grep '^nodev' /proc/filesystems | grep -q '\tzfs$'; then
+        echo zfs
+    fi
+
+    # should be always supported
+    echo swap
+}
+
+get_supported_fs() {
+    # linux sucks at this so this is kinda ugly and heuristical
+    _get_supported_fsall | sort | uniq
+}
+
+get_supported_fs_dbl() {
+    for fs in $(get_supported_fs); do
+        echo "$fs"
+        echo "$fs"
+    done
+    unset fs
+}
+
+# early checks
+
+if [ "$(id -u)" -ne 0 ]; then
+    die "must be run as root"
+fi
+
+if ! command -v dialog > /dev/null 2>&1; then
+    die "dialog command is missing"
+fi
+
+# ui routines
+
+DLG_BLACK="\Z0"
+DLG_RED="\Z1"
+DLG_GREEN="\Z2"
+DLG_YELLOW="\Z3"
+DLG_BLUE="\Z4"
+DLG_MAGENTA="\Z5"
+DLG_CYAN="\Z6"
+DLG_WHITE="\Z7"
+DLG_BOLD="\Zb"
+DLG_REVERSE="\Zr"
+DLG_UNDERLINE="\Zu"
+DLG_RESET="\Zn"
+
+DLG_MENU_LABEL="\n${DLG_BOLD}The Enter key selects options. The Up/Down keys switch between\n
+options, the Tab or Left/Right key switches between buttons.${DLG_RESET}"
+
+ui_dialog() {
+    rm -f "$ANSWER_FILE"
+    dialog --colors --no-shadow --keep-tite \
+        --backtitle "${DLG_BOLD}${DLG_WHITE}Chimera Linux installer${DLG_RESET}" \
+        --cancel-label "Back" --aspect 20 "$@" 2>"$ANSWER_FILE"
+    return $?
+}
+
+ui_infobox() {
+    titl="$1"
+    shift
+    dialog --colors --no-shadow \
+        --backtitle "${DLG_BOLD}${DLG_WHITE}Chimera Linux installer${DLG_RESET}" \
+        --aspect 20 --title "$titl" --infobox "$@"
+    unset titl
+}
+
+ui_programbox() {
+    titl="$1"
+    shift
+    stdbuf -oL -- "$@" | ui_dialog --title "$titl" --programbox 24 80
+    unset titl
+}
+
+# command line options
+
+usage() {
+    if [ -z "$2" ]; then
+        echo "${1}: the Chimera Linux installer"
+    else
+        echo "${1}: ${2}"
+    fi
+    echo ""
+    echo "Available options:"
+    echo ""
+    echo "  -h, --help         Show this listing."
+    echo "  -c, --config CONF  Use the given configuration."
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage "$0"
+            exit 0
+            ;;
+        -c|--config)
+            if [ -z "$2" ]; then
+                die "invalid configuration file"
+            fi
+            if [ ! -r "$2" ]; then
+                die "configuration file could not be read"
+            fi
+            config_load "$2"
+            shift 2
+            ;;
+        *)
+            usage "unknown option '$1'" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# initial system detection
+
+if ! config_has ARCH; then
+    config_set ARCH "$(uname -m)"
+fi
+
+if ! config_has TYPE; then
+    # detection
+    case "$(config_get ARCH)" in
+        ppc*) config_set TYPE ppc ;;
+        x86_64|i[456]86)
+            if [ -e /sys/firmware/efi/systab ]; then
+                config_set TYPE efi
+            else
+                config_set TYPE bios
+                config_set GRUB_TARGET "i386-pc"
+            fi
+            ;;
+        *)
+            if [ -e /sys/firmware/efi/systab ]; then
+                config_set TYPE efi
+            else
+                config_set TYPE unknown
+            fi
+            ;;
+    esac
+fi
+
+check_ppc() {
+    if config_has PPC_FLAVOR; then
+        return
+    fi
+    case "$1" in
+        *PowerNV*|*OPAL*) config_set PPC_FLAVOR opal ;;
+        *pSeries*|*CHRP*)
+            config_set PPC_FLAVOR chrp
+            config_set GRUB_TARGET "powerpc-ieee1275"
+            ;;
+        *PowerMac*|*MacRISC*)
+            config_set PPC_FLAVOR mac
+            config_set GRUB_TARGET "powerpc-ieee1275"
+            ;;
+    esac
+}
+
+case "$(config_get TYPE)" in
+    efi)
+        case "$(config_get ARCH)" in
+            aarch64) config_set GRUB_TARGET "arm64-efi" ;;
+            *) config_set GRUB_TARGET "$(config_get ARCH)-efi" ;;
+        esac
+        ;;
+    ppc)
+        # early mac check
+        case "$(grep '^pmac-generation' /proc/cpuinfo)" in
+            *OldWorld*)
+                # not really used but...
+                config_set PPC_FLAVOR mac_ow
+                ;;
+            *NewWorld*)
+                config_set PPC_FLAVOR mac
+                config_set GRUB_TARGET "powerpc-ieee1275"
+                ;;
+        esac
+        # perform more specific checks for different ppc platforms
+        check_ppc "$(grep '^platform' /proc/cpuinfo)"
+        # examples: 'PowerMac3,1 MacRISC MacRISC2 Power Macintosh'
+        check_ppc "$(grep '^motherboard' /proc/cpuinfo)"
+        # examples: 'PowerNV T2P9S01 REV 1.01', 'PowerMac3,1', 'CHRP IBM pSeries'
+        check_ppc "$(grep '^machine' /proc/cpuinfo)"
+        # examples: 'T2P9S01 REV 1.01', 'PowerMac3,1', 'IBM pSeries'
+        check_ppc "$(grep '^model' /proc/cpuinfo)"
+        # examples: 'OPAL'
+        check_ppc "$(grep '^firmware' /proc/cpuinfo)"
+        ;;
+esac
+
+# ui handling
+
+menu_source() {
+    ui_dialog --title "Installation type" \
+        --menu "${DLG_MENU_LABEL}" 10 70 0 \
+        "Local" "Copy system from installation media" \
+        "Network" "Install system from the repository"
+
+    case $(cat "$ANSWER_FILE") in
+        "Local") config_set SOURCE local ;;
+        "Network") config_set SOURCE network ;;
+        *) return 1 ;;
+    esac
+}
+
+menu_hostname() {
+    while :; do
+        ui_dialog --inputbox "Please set the machine hostname:" 14 60 "$(config_get HOSTNAME)"
+        if [ $? -eq 0 ]; then
+            config_set_answer HOSTNAME
+            if config_has HOSTNAME; then
+                break
+            fi
+        else
+            return
+        fi
+    done
+}
+
+menu_timezone() {
+    area=
+    while :; do
+        ui_dialog --title "Area selection" ${area:+--default-item $area} \
+            --menu "${DLG_MENU_LABEL}" 19 70 19 \
+            "Africa" "Africa" \
+            "America" "America" \
+            "Antarctica" "Antarctica" \
+            "Arctic" "Arctic" \
+            "Asia" "Asia" \
+            "Atlantic" "Atlantic" \
+            "Australia" "Australia" \
+            "Europe" "Europe" \
+            "Indian" "Indian" \
+            "Pacific" "Pacific"
+        if [ $? -ne 0 ]; then
+            # back without setting anything
+            unset area
+            return 0
+        fi
+        # display the location selector
+        area=$(cat "$ANSWER_FILE")
+        set --
+        for loc in $(find /usr/share/zoneinfo/"$area" -type f | sort); do
+            loc=${loc##*/}
+            set -- "$@" "$loc" "$loc"
+        done
+        unset loc
+        ui_dialog --title "Location selection" \
+            --menu "${DLG_MENU_LABEL}" 19 70 19 "$@"
+        if [ $? -ne 0 ]; then
+            # back to area selection...
+            continue
+        fi
+        loc=$(cat "$ANSWER_FILE")
+        config_set TIMEZONE "${area}/${loc}"
+        unset area loc
+        return 0
+    done
+}
+
+menu_password() {
+    answer1=
+    answer2=
+    while :; do
+        if [ -n "$answer1" -a -z "$answer2" ]; then
+            descr=" again"
+        fi
+        ui_dialog --insecure --passwordbox "Enter the password for user "$1"${descr}" 8 60
+        if [ $? -ne 0 ]; then
+            unset answer1 answer2 descr
+            return
+        fi
+        if [ -z "$answer1" ]; then
+            answer1=$(cat "$ANSWER_FILE")
+        else
+            answer2=$(cat "$ANSWER_FILE")
+        fi
+        if [ -n "$answer1" -a -n "$answer2" ]; then
+            if [ "$answer1" != "$answer2" ]; then
+                ui_infobox "Invalid password" "Passwords do not match." 6 60
+                unset answer1 answer2 descr
+                sleep 2
+                continue
+            fi
+            config_set "$2" "$answer1"
+            unset answer1 answer2 descr
+            break
+        fi
+    done
+}
+
+menu_user_account() {
+    while :; do
+        ui_dialog --inputbox "Enter a user name:" 8 60 "$(config_get USERNAME)"
+        if [ $? -ne 0 ]; then
+            continue
+        fi
+        config_set_answer USERNAME
+        if config_has USERNAME; then
+            break
+        fi
+    done
+
+    while :; do
+        ui_dialog --inputbox "Enter a full name (may be empty):" 8 60 "$(config_get FULLNAME)"
+        if [ $? -ne 0 ]; then
+            continue
+        fi
+        config_set_answer FULLNAME
+        break
+    done
+
+    menu_password "$(config_get USERNAME)" PASSWORD
+}
+
+menu_filesystems() {
+    while :; do
+        ui_dialog --title "Select the block device to change" \
+            --ok-label "Change" --cancel-label "Done" \
+            --menu "${DLG_MENU_LABEL}" 14 70 0 $(get_partitions)
+        if [ $? -ne 0 ]; then
+            return
+        fi
+
+        fsedit=$(cat "$ANSWER_FILE")
+        ui_dialog --title "Select the filesystem type for ${fsedit}" \
+            --menu "${DLG_MENU_LABEL}" 14 70 0 \
+            $(get_supported_fs_dbl)
+        if [ $? -ne 0 ]; then
+            continue
+        fi
+
+        fstype=$(cat "$ANSWER_FILE")
+        if [ "$fstype" != "swap" ]; then
+            ui_dialog --inputbox "Specify the mount point for ${fsedit} (may be 'none'):" 8 60
+            if [ $? -eq 0 ]; then
+                mntpt=$(cat "$ANSWER_FILE")
+            else
+                continue
+            fi
+        else
+            mntpt=swap
+        fi
+
+        ui_dialog --yesno "Do you wish to format ${fsedit}?" 8 60
+        if [ $? -eq 0 ]; then
+            format=1
+        elif [ $? -eq 1 ]; then
+            format=0
+        else
+            continue
+        fi
+
+        fssize=$(lsblk -nr -o fssize "$fsedit" | head -n1)
+        cfgn=$(echo "MNT_${fsedit}" | tr '/-' '_')
+        config_set "$cfgn" "mntpt:${mntpt},dev:${fsedit},size:${fssize},format:${format}"
+
+        unset fsedit fstype fssize mntpt format cfgn
+    done
+}
+
+_dump_filesystems() {
+    for mnt in $(config_dump | sed 's,^INSTALL_CONFIG_,,' | grep '^MNT_' | sed 's,=.*,,'); do
+        config_get $mnt
+    done
+    unset mnt
+}
+
+dump_filesystems() {
+    # sorted by mountpoint to make it predictable
+    _dump_filesystems | sort
+}
+
+ensure_filesystems() {
+    OIFS="$IFS"
+    for fs in $(dump_filesystems); do
+        IFS=,
+        set --
+        for el in $fs; do
+            set -- "$@" "$el"
+        done
+        IFS="$OIFS"
+        mntpt=${1#mntpt:}
+        dev=${2#dev:}
+        fssize=${3#size:}
+        format=${4#format:}
+        # basic validation
+        if [ "$mntpt" = "/" ]; then
+            found_root=1
+        elif [ "$mntpt" = "/usr" ]; then
+            found_usr=1
+        fi
+    done
+}
+
+menu_sysroot() {
+    sysroot=$(config_get SYSROOT)
+    if [ -z "$sysroot" ]; then
+        sysroot="auto"
+    fi
+    while :; do
+        ui_dialog --inputbox "Please enter the system root mount.\n\n
+This is where the system will be installed and must either be\n
+'auto' or an existing mount point.\n\n
+Changing this is mainly useful if you have a pre-existing mount\n
+hierarchy and don't wish to let the installer do the mounting\n
+(such as for ZFS installations)." 14 70 "$sysroot"
+        if [ $? -eq 0 ]; then
+            sysroot=$(cat "$ANSWER_FILE")
+            if [ "$sysroot" != "auto" ] && ! mountpoint -q "$sysroot"; then
+                ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} the system root is invalid" 8 70
+                continue
+            fi
+            config_set SYSROOT "$sysroot"
+            unset sysroot
+            break
+        else
+            unset sysroot
+            return
+        fi
+    done
+}
+
+menu_bootloader() {
+}
+
+menu_install() {
+    if ! config_has ROOT_PASSWORD; then
+        ui_dialog --msgbox "${DLG_BOLD}You have not yet configured the root password.${DLG_RESET}" 8 70
+    fi
+
+    # TODO: create filesystems here
+
+    sysroot=$(config_get SYSROOT)
+    if [ -z "$sysroot" -o "$sysroot" = "auto" ]; then
+        sysroot="/mnt/root"
+    fi
+
+    if ! mountpoint -q "$sysroot" > /dev/null 2>&1; then
+        ui_dialog --msgbox "${DLG_BOLD}System root has not been configured yet.${DLG_RESET}" 8 70
+    fi
+
+    if ! config_has SOURCE || config_is SOURCE "local"; then
+        ui_programbox "Bootstrapping system..." chimera-bootstrap -l "$sysroot"
+    else
+        ui_programbox "Installing target packages..." chimera-bootstrap "$sysroot"
+    fi
+
+    ui_infobox "" "Applying settings..." 4 60
+
+    genfstab -U "$sysroot" > "${sysroot}/etc/fstab"
+
+    if config_has HOSTNAME; then
+        config_get HOSTNAME > "${sysroot}/etc/hostname"
+    fi
+
+    if config_has TIMEZONE; then
+        ln -sf /usr/share/zoneinfo/$(config_get TIMEZONE) "${sysroot}/etc/localtime"
+    fi
+
+    echo "root:$(config_get ROOT_PASSWDORD)" | chpasswd -R "$sysroot" -c SHA512
+
+    if config_has USERNAME; then
+        useradd -R "$sysroot" -m -c "$(config_get FULLNAME)" "$(config_get USERNAME)"
+        echo "$(config_get USERNAME):$(config_get PASSWORD)" | chpasswd -R "$sysroot" -c SHA512
+    fi
+
+    # TODO install bootloader here
+
+    while :; do
+        ui_dialog --yesno "${DLG_BOLD}Chimera Linux has been installed.${DLG_RESET}\n
+Do you wish to open a shell to perform additional tasks?" 8 60
+        if [ $? -eq 0 ]; then
+            chimera-chroot "${sysroot}"
+        elif [ $? -eq 1 ]; then
+            break
+        else
+            continue
+        fi
+    done
+
+    ui_dialog --yesno "${DLG_BOLD}The installation has finished.${DLG_RESET}\n
+Do you wish to reboot now?" 8 60
+    if [ $? -eq 0 ]; then
+        poweroff
+    fi
+
+    unset sysroot
+}
+
+menu_entry() {
+    if [ -z "$MENU_DEFAULT_ITEM" ]; then
+        MENU_DEFAULT_ITEM="Source"
+    fi
+
+    ui_dialog --default-item "$MENU_DEFAULT_ITEM" \
+        --extra-button --extra-label "Settings" \
+        --title "Chimera Linux installer" \
+        --menu "${DLG_MENU_LABEL}" 10 70 0 \
+        "Source" "Installation type (network or local)" \
+        "Hostname" "System hostname" \
+        "Timezone" "System timezone" \
+        "RootPassword" "Root password" \
+        "UserAccount" "Your user name and password" \
+        "Filesystems" "Arrange the file systems" \
+        "SystemRoot" "Set the target path for bootstrap" \
+        "Bootloader" "Select the bootloader to use" \
+        "Install" "Perform the installation" \
+        "Exit" "Exit installation"
+
+    if [ $? -eq 3 ]; then
+        config_dump > "$DUMP_FILE"
+        ui_dialog --title "Installation configuration" --textbox "$DUMP_FILE" 14 80
+        rm -f "$DUMP_FILE"
+        return
+    fi
+
+    case $(cat "$ANSWER_FILE") in
+        "Source") menu_source && config_has SOURCE && MENU_DEFAULT_ITEM="Hostname" ;;
+        "Hostname") menu_hostname && config_has HOSTNAME && MENU_DEFAULT_ITEM="Timezone" ;;
+        "Timezone") menu_timezone && config_has TIMEZONE && MENU_DEFAULT_ITEM="RootPassword" ;;
+        "RootPassword") menu_password root ROOT_PASSWORD && config_has ROOT_PASSWORD && MENU_DEFAULT_ITEM="UserAccount" ;;
+        "UserAccount") menu_user_account && config_has USERNAME && MENU_DEFAULT_ITEM="Filesystems" ;;
+        "Filesystems") menu_filesystems && config_has ROOTDEV && MENU_DEFAULT_ITEM="SystemRoot" ;;
+        "SystemRoot") menu_sysroot && config_has SYSROOT && MENU_DEFAULT_ITEM="Bootloader" ;;
+        "Bootloader") menu_bootloader && config_has BOOTLOADER && MENU_DEFAULT_ITEM="Install" ;;
+        "Install") menu_install ;;
+        "Exit") die ;;
+        *) ui_dialog --yesno "Exit installation?" 8 60 && die
+    esac
+}
+
+# entry point
+
+ui_dialog --title "${DLG_BOLD}${DLG_RED} Welcome to Chimera Linux installation${DLG_RESET}" \
+    --msgbox "\n
+Welcome to Chimera Linux installation.\n\n
+Chimera Linux is a general-purpose Linux distribution built from scratch.\n
+This program will guide you through installing it onto your computer.\n\n
+You will be given a variety of options allowing you to customize the setup.\n\n
+If you need more help, please refer to ${DLG_BOLD}https://chimera-linux.org/docs/${DLG_RESET}\n
+or one of our communication channels." 16 80
+
+while :; do
+    menu_entry
+done
+
+exit 0
