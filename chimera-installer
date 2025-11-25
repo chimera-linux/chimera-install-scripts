@@ -558,7 +558,167 @@ hierarchy and don't wish to let the installer do the mounting\n
     done
 }
 
+menu_bootloader_esp() {
+    espath=$(config_get BOOTLOADER_ESP)
+    if [ -z "$espath" ]; then
+        espath="auto"
+    fi
+    while :; do
+        ui_dialog --inputbox "If you wish to specify the EFI partition mount, set it here.\n\n
+If you have multiple ESP mounts, you should be explicit here.\n
+Most configurations with one ESP don't have to specify anything." 12 70 "$espath"
+        if [ $? -eq 0 ]; then
+            espath=$(cat "$ANSWER_FILE")
+            config_set BOOTLOADER_ESP "$espath"
+            config_set BOOTLOADER "$1"
+            unset espath
+            break
+        else
+            unset espath
+            return
+        fi
+    done
+}
+
+menu_bootloader_ofpart() {
+    # we only care about physical drives, because the boootstrap partition
+    # cannot be present on device mapper or on mdadm or anything like that
+    #
+    # for macs, we need an Apple_Bootstrap drive on APM
+    # for chrp we need PPC PReP partition on MBR or GPT
+    set -- $(get_drives)
+    bdevs=
+    while [ $# -ne 0 ]; do
+        diskn="$1"
+        shift 2
+        case "$(config_get PPC_FLAVOR)" in
+            mac)
+                # dump partition table for this disk
+                # grep only device info
+                # filter first two columns to avoid labels influencing it
+                # filter out Apple_Bootstrap partitions only
+                # and finally get only the device column
+                nbdevs=$(mac-fdisk -r -l "$diskn" 2>/dev/null | grep '^/dev' | awk '{print $1 " "  $2}' | grep Apple_Bootstrap | awk '{print $1}')
+                if [ -n "$nbdevs" ]; then
+                    bdevs="$bdevs $nbdevs"
+                fi
+                unset nbdevs
+                ;;
+            chrp)
+                # for chrp, make sure the disk is MBR or GPT
+                case $(blkid --match-tag PTTYPE --output value "$diskn") in
+                    dos)
+                        # check mbr partition type here (0x41)
+                        for part in /sys/block/${diskn}/${diskn}*; do
+                            [ -d "$part" ] || continue
+                            btype=$(lsblk -n -o PARTTYPE "/dev/${part}")
+                            if [ "$btype" = "0x41" ]; then
+                                bdevs="$bdevs /dev/${part}"
+                            fi
+                            unset btype
+                        done
+                        ;;
+                    gpt)
+                        # check gpt partition type here (9e1a2d38-c612-4316-aa26-8b49521e5a8b)
+                        for part in /sys/block/${diskn}/${diskn}*; do
+                            [ -d "$part" ] || continue
+                            btype=$(lsblk -n -o PARTTYPE "/dev/${part}")
+                            if [ "$btype" = "9e1a2d38-c612-4316-aa26-8b49521e5a8b" ]; then
+                                bdevs="$bdevs /dev/${part}"
+                            fi
+                            unset btype
+                        done
+                        ;;
+                    *) ;;
+                esac
+                ;;
+            # ???
+            *) return 1 ;;
+        esac
+    done
+
+    unset diskn
+
+    # sorted list of bootstrap partitions
+    set -- $(echo $bdevs | tr ' ' '\n' | sort)
+    bdevs="$@"
+
+    # ensure there is at least one
+    if [ $# -eq 0 ]; then
+        ui_dialog --msgbox "No valid bootstrap partition(s) have been found." 8 70
+        unset bdevs
+        return 1
+    fi
+
+    # turn it into a menuable list
+    set --
+    for bdev in $bdevs; do
+        set -- "$@" "$bdev" "$bdev"
+    done
+    unset bdev
+    unset bdevs
+
+    ui_dialog --title "Select the bootstrap partition to install the bootloader" \
+        --menu "${DLG_MENU_LABEL}" 14 70 0 "$@"
+    if [ $? -ne 0 ]; then
+        return 0
+    fi
+
+    bdev=$(cat "$ANSWER_FILE")
+    config_set BOOTLOADER_OFPART "$bdev"
+    config_set BOOTLOADER "$1"
+    unset bdev
+}
+
+menu_bootloader_grub() {
+    case "$(config_get TYPE)" in
+        efi)
+            menu_bootloader_esp grub
+            return $?
+            ;;
+        ppc)
+            case "$(config_get PPC_FLAVOR)" in
+                chrp|mac)
+                    menu_bootloader_ofpart grub
+                    return $?
+                    ;;
+                opal)
+                    # don't need to specify anything for opal
+                    config_set BOOTLOADER grub
+                    return 0
+                    ;;
+            esac
+            ;;
+    esac
+
+    return 1
+}
+
 menu_bootloader() {
+    set --
+    # offer the option for GRUB if we can install it
+    if config_has GRUB_TARGET; then
+        set -- "$@" "GRUB" "GNU GRUB"
+    fi
+    # for EFI systems, offer systemd-boot
+    case "$(config_get TYPE)" in
+        efi) set -- "$@" "systemd-boot" "systemd-boot" ;;
+        # we don't have other options for now...
+        *) ;;
+    esac
+    # offer the "none" option in any case
+    set -- "$@" "None" "Don't set up a bootloader"
+
+    # now bring up the menu
+    ui_dialog --title "Bootloader" \
+        --menu "${DLG_MENU_LABEL}" 12 70 0 "$@"
+
+    case $(cat "$ANSWER_FILE") in
+        "GRUB") menu_bootloader_grub ;;
+        "systemd-boot") menu_bootloader_esp systemd ;;
+        "None") config_set BOOTLOADER none ;;
+        *) return 1 ;;
+    esac
 }
 
 menu_install() {
