@@ -724,6 +724,7 @@ menu_bootloader() {
 menu_install() {
     if ! config_has ROOT_PASSWORD; then
         ui_dialog --msgbox "${DLG_BOLD}You have not yet configured the root password.${DLG_RESET}" 8 70
+        die
     fi
 
     # TODO: create filesystems here
@@ -735,6 +736,7 @@ menu_install() {
 
     if ! mountpoint -q "$sysroot" > /dev/null 2>&1; then
         ui_dialog --msgbox "${DLG_BOLD}System root has not been configured yet.${DLG_RESET}" 8 70
+        die
     fi
 
     if ! config_has SOURCE || config_is SOURCE "local"; then
@@ -762,7 +764,35 @@ menu_install() {
         echo "$(config_get USERNAME):$(config_get PASSWORD)" | chpasswd -R "$sysroot" -c SHA512
     fi
 
-    # TODO install bootloader here
+    if config_has BOOTLOADER && ! config_is BOOTLOADER none; then
+        ui_infobox "" "Installing bootloader..." 4 60
+
+        # clear the bootstrap partition if we have one...
+        if config_has BOOTLOADER_OFPART; then
+            ofpart=$(config_get BOOTLOADER_OFPART)
+            if [ ! -b "$ofpart" ]; then
+                # should not happen
+                ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} bootstrap partition is not a block device" 8 70
+                die
+            fi
+
+            # zero the partition ahead of time just in case
+            dd if=/dev/zero of="$ofpart"
+
+            # for macs, format it with hfs
+            case "$(config_get PPC_FLAVOR)" in
+                mac)
+                    hformat -l bootstrap "$ofpart"
+                    ;;
+            esac
+        fi
+
+        # install logic for each
+        case $(config_get BOOTLOADER) in
+            grub) menu_install_grub ;;
+            systemd) menu_install_systemd_boot ;;
+        esac
+    fi
 
     while :; do
         ui_dialog --yesno "${DLG_BOLD}Chimera Linux has been installed.${DLG_RESET}\n
