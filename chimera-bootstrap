@@ -81,6 +81,7 @@ Options:
   -I       Ignore system repositories.
   -r REPO  Specify additional package repository.
   -k DIR   Override apk keys directory.
+  -m URL   Specify a mirror URL to use for the bootstrap.
   -f       Force installation even with non-empty target root.
   -u       Allow untrusted packages.
   -h       Print this message.
@@ -95,6 +96,7 @@ INSTALL_FORCE=0
 INSTALL_IGNORE_REPOS=0
 INSTALL_KEYS_DIR="/usr/lib/apk/keys"
 INSTALL_APK_ARGS="--no-interactive"
+INSTALL_MIRROR=
 CACHE_DIR=
 
 # ensure we run as root
@@ -102,7 +104,7 @@ if [ "$(id -u)" != "0" ]; then
     die "Must run this as root."
 fi
 
-while getopts "C:lL:a:iIr:k:fuh" opt; do
+while getopts "C:lL:a:iIr:k:m:fuh" opt; do
     case "$opt" in
         C) CACHE_DIR="$OPTARG" ;;
         l) INSTALL_LOCAL=1 ;;
@@ -118,6 +120,7 @@ while getopts "C:lL:a:iIr:k:fuh" opt; do
             echo "$OPTARG" >> "$EREPOSF"
             ;;
         k) INSTALL_KEYS_DIR="$OPTARG" ;;
+        m) INSTALL_MIRROR="$OPTARG" ;;
         f) INSTALL_FORCE=1 ;;
         u) INSTALL_APK_ARGS="$INSTALL_APK_ARGS --allow-untrusted" ;;
         h) usage 0 ;;
@@ -199,9 +202,13 @@ make_reposf() {
     REPOSF=$(mktemp)
     [ $? -eq 0 ] || die "failed to generate a repositories file"
 
+    if [ -n "$INSTALL_MIRROR" ]; then
+        echo "set CHIMERA_REPO_URL=$INSTALL_MIRROR" > "$REPOSF"
+    fi
+
     if [ "$INSTALL_IGNORE_REPOS" -eq 1 ]; then
         if [ -n "$EREPOSF" ]; then
-            cat "$EREPOSF" > "$REPOSF"
+            cat "$EREPOSF" >> "$REPOSF"
         fi
         return 0
     fi
