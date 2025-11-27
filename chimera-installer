@@ -463,6 +463,53 @@ Most configurations with one ESP don't have to specify anything." 12 70 "$espath
     done
 }
 
+menu_bootloader_mbr() {
+    # we only care about physical drives, because the MBR can only be
+    # installed to a whole physical disk, and it has to be MBR
+    set -- $(get_drives)
+    bdevs=
+    while [ $# -ne 0 ]; do
+        diskn="$1"
+        shift 2
+        disktp=$(blkid --match-tag PTTYPE --output value "$diskn")
+        if [ "$disktp" = "dos" ]; then
+            bdevs="$bdevs $diskn"
+        fi
+    done
+
+    unset diskn
+
+    # sorted list of bootstrap drives
+    set -- $(echo $bdevs | tr ' ' '\n' | sort)
+    bdevs="$@"
+
+    # ensure there is at least one
+    if [ $# -eq 0 ]; then
+        ui_dialog --msgbox "No valid MBR drives have been found." 8 70
+        unset bdevs
+        return 1
+    fi
+
+    # turn it into a menuable list
+    set --
+    for bdev in $bdevs; do
+        set -- "$@" "$bdev" "$bdev"
+    done
+    unset bdev
+    unset bdevs
+
+    ui_dialog --title "Select the disk to install the bootloader MBR" \
+        --menu "${DLG_MENU_LABEL}" 14 70 0 "$@"
+    if [ $? -ne 0 ]; then
+        return 0
+    fi
+
+    bdev=$(cat "$ANSWER_FILE")
+    config_set BOOTLOADER_MBR "$bdev"
+    config_set BOOTLOADER "$1"
+    unset bdev
+}
+
 menu_bootloader_ofpart() {
     # we only care about physical drives, because the boootstrap partition
     # cannot be present on device mapper or on mdadm or anything like that
@@ -555,6 +602,10 @@ menu_bootloader_ofpart() {
 
 menu_bootloader_grub() {
     case "$(config_get TYPE)" in
+        bios)
+            menu_bootloader_mbr grub
+            return $?
+            ;;
         efi)
             menu_bootloader_esp grub
             return $?
@@ -808,7 +859,11 @@ menu_install() {
                 fi
                 # device if we have it, at the end
                 if [ -n "$ofpart" ]; then
+                    # partition
                     set -- "$@" "$ofpart"
+                elif config_has BOOTLOADER_MBR; then
+                    # whole disk
+                    set -- "$@" $(config_get BOOTLOADER_MBR)
                 fi
                 # and do it
                 ui_programbox "Installing bootloader..." chimera-chroot grub-install "$@"
