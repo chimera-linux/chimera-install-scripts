@@ -692,6 +692,8 @@ menu_install() {
         unset esptp
         # normalize
         esp=$(findmnt -no TARGET "$esp")
+    else
+        esp=
     fi
 
     # for systemd-boot and separate /boot ensure it's xbootldr and vfat
@@ -773,6 +775,8 @@ menu_install() {
                     hformat -l bootstrap "$ofpart"
                     ;;
             esac
+        else
+            ofpart=
         fi
 
         if config_is BOOTLOADER systemd; then
@@ -795,7 +799,33 @@ menu_install() {
                 die
             fi
         elif config_is BOOTLOADER grub; then
-            # TODO
+            # install grub if we have a target, if not it's e.g. powernv
+            if config_has GRUB_TARGET; then
+                set -- --target=$(config_get GRUB_TARGET)
+                # esp directory if we have it
+                if [ -n "$esp" ]; then
+                    set -- "$@" --efi-directory="$esp"
+                fi
+                # device if we have it, at the end
+                if [ -n "$ofpart" ]; then
+                    set -- "$@" "$ofpart"
+                fi
+                # and do it
+                ui_programbox "Installing bootloader..." chimera-chroot grub-install "$@"
+                if [ $? -ne 0 ]; then
+                    ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to install bootloader" 8 70
+                    die
+                fi
+            else
+                # we still need a grub dir
+                mkdir -p "${sysroot}/boot/grub"
+            fi
+            # generate grub config
+            ui_programbox "Generating boot entries..." chimera-chroot update-grub
+            if [ $? -ne 0 ]; then
+                ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to generate boot entries" 8 70
+                die
+            fi
         fi
     fi
 
