@@ -122,42 +122,6 @@ get_partitions() {
     unset diskn part
 }
 
-_get_supported_fsdev() {
-    for fs in $(grep -v '^nodev' /proc/filesystems); do
-        case "$fs" in
-            fuse*) continue ;;
-            *) echo "$fs" ;;
-        esac
-    done
-
-    unset fs
-}
-
-_get_supported_fsall() {
-    _get_supported_fsdev
-
-    # zfs is nodev and special but we want to include it
-    if grep '^nodev' /proc/filesystems | grep -q '\tzfs$'; then
-        echo zfs
-    fi
-
-    # should be always supported
-    echo swap
-}
-
-get_supported_fs() {
-    # linux sucks at this so this is kinda ugly and heuristical
-    _get_supported_fsall | sort | uniq
-}
-
-get_supported_fs_dbl() {
-    for fs in $(get_supported_fs); do
-        echo "$fs"
-        echo "$fs"
-    done
-    unset fs
-}
-
 # early checks
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -448,86 +412,6 @@ menu_user_account() {
     done
 
     menu_password "$(config_get USERNAME)" PASSWORD
-}
-
-menu_filesystems() {
-    while :; do
-        ui_dialog --title "Select the block device to change" \
-            --ok-label "Change" --cancel-label "Done" \
-            --menu "${DLG_MENU_LABEL}" 14 70 0 $(get_partitions)
-        if [ $? -ne 0 ]; then
-            return
-        fi
-
-        fsedit=$(cat "$ANSWER_FILE")
-        ui_dialog --title "Select the filesystem type for ${fsedit}" \
-            --menu "${DLG_MENU_LABEL}" 14 70 0 \
-            $(get_supported_fs_dbl)
-        if [ $? -ne 0 ]; then
-            continue
-        fi
-
-        fstype=$(cat "$ANSWER_FILE")
-        if [ "$fstype" != "swap" ]; then
-            ui_dialog --inputbox "Specify the mount point for ${fsedit} (may be 'none'):" 8 60
-            if [ $? -eq 0 ]; then
-                mntpt=$(cat "$ANSWER_FILE")
-            else
-                continue
-            fi
-        else
-            mntpt=swap
-        fi
-
-        ui_dialog --yesno "Do you wish to format ${fsedit}?" 8 60
-        if [ $? -eq 0 ]; then
-            format=1
-        elif [ $? -eq 1 ]; then
-            format=0
-        else
-            continue
-        fi
-
-        fssize=$(lsblk -nr -o fssize "$fsedit" | head -n1)
-        cfgn=$(echo "MNT_${fsedit}" | tr '/-' '_')
-        config_set "$cfgn" "mntpt:${mntpt},dev:${fsedit},size:${fssize},format:${format}"
-
-        unset fsedit fstype fssize mntpt format cfgn
-    done
-}
-
-_dump_filesystems() {
-    for mnt in $(config_dump | sed 's,^INSTALL_CONFIG_,,' | grep '^MNT_' | sed 's,=.*,,'); do
-        config_get $mnt
-    done
-    unset mnt
-}
-
-dump_filesystems() {
-    # sorted by mountpoint to make it predictable
-    _dump_filesystems | sort
-}
-
-ensure_filesystems() {
-    OIFS="$IFS"
-    for fs in $(dump_filesystems); do
-        IFS=,
-        set --
-        for el in $fs; do
-            set -- "$@" "$el"
-        done
-        IFS="$OIFS"
-        mntpt=${1#mntpt:}
-        dev=${2#dev:}
-        fssize=${3#size:}
-        format=${4#format:}
-        # basic validation
-        if [ "$mntpt" = "/" ]; then
-            found_root=1
-        elif [ "$mntpt" = "/usr" ]; then
-            found_usr=1
-        fi
-    done
 }
 
 menu_sysroot() {
@@ -917,7 +801,6 @@ menu_entry() {
         "Timezone") menu_timezone && config_has TIMEZONE && MENU_DEFAULT_ITEM="RootPassword" ;;
         "RootPassword") menu_password root ROOT_PASSWORD && config_has ROOT_PASSWORD && MENU_DEFAULT_ITEM="UserAccount" ;;
         "UserAccount") menu_user_account && config_has USERNAME && MENU_DEFAULT_ITEM="SystemRoot" ;;
-        #"Filesystems") menu_filesystems && config_has ROOTDEV && MENU_DEFAULT_ITEM="SystemRoot" ;;
         "SystemRoot") menu_sysroot && config_has SYSROOT && MENU_DEFAULT_ITEM="Bootloader" ;;
         "Bootloader") menu_bootloader && config_has BOOTLOADER && MENU_DEFAULT_ITEM="Install" ;;
         "Install") menu_install ;;
