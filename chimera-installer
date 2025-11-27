@@ -541,7 +541,7 @@ This is where the system will be installed and must be set to\n
 a valid mount point (the structure will be validated)." 14 70 "$sysroot"
         if [ $? -eq 0 ]; then
             sysroot=$(cat "$ANSWER_FILE")
-            if ! mountpoint -q "$sysroot"; then
+            if ! mountpoint -q "$sysroot" > /dev/null 2>&1; then
                 ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} the system root is invalid" 8 70
                 continue
             fi
@@ -567,7 +567,9 @@ Most configurations with one ESP don't have to specify anything." 12 70 "$espath
         if [ $? -eq 0 ]; then
             espath=$(cat "$ANSWER_FILE")
             config_set BOOTLOADER_ESP "$espath"
-            config_set BOOTLOADER "$1"
+            if [ -n "$1" ]; then
+                config_set BOOTLOADER "$1"
+            fi
             unset espath
             break
         else
@@ -713,7 +715,14 @@ menu_bootloader() {
     case $(cat "$ANSWER_FILE") in
         "GRUB") menu_bootloader_grub ;;
         "systemd-boot") menu_bootloader_esp systemd ;;
-        "None") config_set BOOTLOADER none ;;
+        "None")
+            if config_is TYPE efi; then
+                # we still offer the option to pick an ESP mount for EFI
+                menu_bootloader_esp ""
+            else
+                config_set BOOTLOADER none
+            fi
+            ;;
         *) return 1 ;;
     esac
 }
@@ -733,6 +742,68 @@ menu_install() {
 
     if ! mountpoint -q "$sysroot" > /dev/null 2>&1; then
         ui_dialog --msgbox "${DLG_BOLD}System root does not point to a valid mount.${DLG_RESET}" 8 70
+        die
+    fi
+
+    # for EFI systems, ensure there is a valid ESP
+    if config_is TYPE efi; then
+        esp=
+        if ! config_has BOOTLOADER_ESP || config_is BOOTLOADER_ESP auto; then
+            # try to figure out an efi system partition in the mount tree
+            # start by locating all fat32 file systems
+            set -- $(findmnt -Rln -o SOURCE,FSTYPE "$sysroot" | grep "vfat$")
+            while [ $# -ne 0 ]; do
+                # see if the filesystem is an ESP
+                pttype=$(lsblk -n -o PARTTYPE "$1" 2>/dev/null)
+                if [ "$pttype" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]; then
+                    # already had an esp...
+                    if [ -n "$esp" ]; then
+                        ui_dialog --msgbox "${DLG_BOLD}Multiple EFI system partition mounts found.${DLG_RESET}" 8 70
+                        die
+                    fi
+                    # found an esp!
+                    esp=$(findmnt -ln -o TARGET "$1")
+                fi
+                unset pttype
+                shift 2
+            done
+        else
+            esp=$(config_get BOOTLOADER_ESP)
+        fi
+        # first make sure it's a mount
+        if [ -z "$esp" ] || ! mountpoint -q "$esp" > /dev/null 2>&1; then
+            ui_dialog --msgbox "${DLG_BOLD}EFI partition is not mounted.${DLG_RESET}" 8 70
+            die
+        fi
+        # then make sure it's FAT-formatted
+        espfs=$(findmnt -ln -o FSTYPE "$esp")
+        if [ "$espfs" != "vfat" ]; then
+            ui_dialog --msgbox "${DLG_BOLD}EFI partition must be FAT32.${DLG_RESET}" 8 70
+            die
+        fi
+        unset espfs
+        # the ensure it's a device that esp can be on
+        espdev=$(findmnt -ln -o SOURCE "$esp")
+        case "$espdev" in
+            /dev/[sv]d*|/dev/nvme*|/dev/mmcblk*) ;;
+            *)
+                ui_dialog --msgbox "${DLG_BOLD}EFI partition must be on a physical disk.${DLG_RESET}" 8 70
+                die
+                ;;
+        esac
+        # then ensure it has the correct type
+        esptp=$(lsblk -n -o PARTTYPE "$espdev")
+        if [ "$esptp" != "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]; then
+            ui_dialog --msgbox "${DLG_BOLD}EFI partition has an incorrect partition type.${DLG_RESET}" 8 70
+            die
+        fi
+        unset espdev
+        unset esptp
+    fi
+
+    # also verify there is no separate /usr partition
+    if mountpoint -q "${sysroot}/usr" > /dev/null 2>&1; then
+        ui_dialog --msgbox "${DLG_BOLD}Separate /usr mount is not supported.${DLG_RESET}" 8 70
         die
     fi
 
@@ -828,7 +899,6 @@ menu_entry() {
         "Timezone" "System timezone" \
         "RootPassword" "Root password" \
         "UserAccount" "Your user name and password (admin account)" \
-        #"Filesystems" "Arrange the file systems" \
         "SystemRoot" "Set the target path for bootstrap" \
         "Bootloader" "Select the bootloader to use" \
         "Install" "Perform the installation" \
