@@ -729,6 +729,8 @@ menu_install() {
         die
     fi
 
+    sysroot=$(config_get SYSROOT)
+
     if ! mountpoint -q "$sysroot" > /dev/null 2>&1; then
         ui_dialog --msgbox "${DLG_BOLD}System root does not point to a valid mount.${DLG_RESET}" 8 70
         die
