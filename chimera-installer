@@ -828,14 +828,29 @@ menu_install() {
         die
     fi
 
-    if ! config_has SOURCE || config_is SOURCE "local"; then
-        ui_programbox "Bootstrapping system..." chimera-bootstrap -l "$sysroot"
+    # mirror for bootstrap stage
+    set --
+    if config_has MIRROR && ! config_is MIRROR "Default"; then
+        mirror=$(config_get MIRROR)
+        set -- -m "$mirror"
     else
-        ui_programbox "Installing target packages..." chimera-bootstrap "$sysroot"
+        mirror=
+    fi
+
+    if ! config_has SOURCE || config_is SOURCE "local"; then
+        ui_programbox "Bootstrapping system..." chimera-bootstrap "$@" -l "$sysroot"
+    else
+        ui_programbox "Installing target packages..." chimera-bootstrap "$@" "$sysroot"
     fi
     if [ $? -ne 0 ]; then
         ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} system bootstrap failed" 8 70
         die
+    fi
+
+    # if we have mirror, add it to the bootstrapped system to use for the rest of packages
+    if [ -n "$mirror" ]; then
+        mkdir -p "${sysroot}/etc/apk/repositories.d"
+        echo "set CHIMERA_REPO_URL=$mirror" > "${sysroot}/etc/apk/repositories.d/00-chimera-mirror.list"
     fi
 
     # build up a list of extra packages to install
