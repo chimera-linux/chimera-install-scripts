@@ -439,6 +439,30 @@ a valid mount point (the structure will be validated)." 14 70 "$sysroot"
     done
 }
 
+menu_kernel() {
+    # now bring up the menu
+    ui_dialog --title "Kernel" \
+        --menu "${DLG_MENU_LABEL}" 12 70 0 \
+        "Stable" "Use the latest stable kernel." \
+        "LTS" "Use the latest long-term support kernel." \
+        "None" "Don't choose a kernel here."
+
+    case $(cat "$ANSWER_FILE") in
+        "Stable") config_set KERNEL stable ;;
+        "LTS") config_set KERNEL lts ;;
+        "None") ;;
+        *) return 1 ;;
+    esac
+}
+
+menu_packages() {
+    ui_dialog --inputbox "Specify additional packages to install:" 14 60 "$(config_get PACKAGES)"
+    if [ $? -eq 0 ]; then
+        config_set_answer PACKAGES
+        config_set PACKAGES_HAVE 1
+    fi
+}
+
 menu_bootloader_esp() {
     espath=$(config_get BOOTLOADER_ESP)
     if [ -z "$espath" ]; then
@@ -784,6 +808,47 @@ menu_install() {
         die
     fi
 
+    # build up a list of extra packages to install
+    if config_has PACKAGES; then
+        extrapkgs=$(config_get PACKAGES)
+    else
+        extrapkgs=
+    fi
+
+    # add bootloader to the list
+    case $(config_get BOOTLOADER) in
+        systemd) extrapkgs="$extrapkgs systemd-boot" ;;
+        grub)
+            if config_has GRUB_TARGET; then
+                extrapkgs="$extrapkgs grub-$(config_get GRUB_TARGET)"
+            else
+                # only tools
+                extrapkgs="$extrapkgs grub"
+            fi
+            ;;
+    esac
+
+    # add kernel to the list
+    case $(config_get KERNEL) in
+        stable) extrapkgs="$extrapkgs linux-stable" ;;
+        lts) extrapkgs="$extrapkgs linux-lts" ;;
+    esac
+
+    # only install stuff if we have anything
+    set -- $extrapkgs
+    if [ $# -ne 0 ]; then
+        ui_programbox "Updating package index..." chimera-chroot apk update
+        if [ $? -ne 0 ]; then
+            ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to update apk index" 8 70
+            die
+        fi
+        ui_programbox "Installing extra packages..." chimera-chroot apk add "$@"
+        if [ $? -ne 0 ]; then
+            ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to install extra packages" 8 70
+            die
+        fi
+    fi
+
     ui_infobox "" "Applying settings..." 4 60
 
     genfstab -U "$sysroot" > "${sysroot}/etc/fstab"
@@ -951,6 +1016,8 @@ menu_entry() {
         "RootPassword" "Root password" \
         "UserAccount" "Your user name and password (admin account)" \
         "SystemRoot" "Set the target path for bootstrap" \
+        "Kernel" "Select the kernel to use" \
+        "Packages" "Specify extra packages to install" \
         "Bootloader" "Select the bootloader to use" \
         "Install" "Perform the installation" \
         "Exit" "Exit installation"
@@ -968,7 +1035,9 @@ menu_entry() {
         "Timezone") menu_timezone && config_has TIMEZONE && MENU_DEFAULT_ITEM="RootPassword" ;;
         "RootPassword") menu_password root ROOT_PASSWORD && config_has ROOT_PASSWORD && MENU_DEFAULT_ITEM="UserAccount" ;;
         "UserAccount") menu_user_account && config_has USERNAME && MENU_DEFAULT_ITEM="SystemRoot" ;;
-        "SystemRoot") menu_sysroot && config_has SYSROOT && MENU_DEFAULT_ITEM="Bootloader" ;;
+        "SystemRoot") menu_sysroot && config_has SYSROOT && MENU_DEFAULT_ITEM="Kernel" ;;
+        "Kernel") menu_kernel && config_has KERNEL && MENU_DEFAULT_ITEM="Packages" ;;
+        "Packages") menu_packages && config_has PACKAGES_HAVE && MENU_DEFAULT_ITEM="Bootloader" ;;
         "Bootloader") menu_bootloader && config_has BOOTLOADER && MENU_DEFAULT_ITEM="Install" ;;
         "Install") menu_install ;;
         "Exit") die ;;
