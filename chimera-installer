@@ -318,6 +318,36 @@ menu_hostname() {
     done
 }
 
+menu_mirror() {
+    rm -f "$DUMP_FILE"
+    fetch -o "$DUMP_FILE" "https://repo.chimera-linux.org/mirrors.txt"
+    if [ $? -ne 0 ]; then
+        ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to fetch mirror list (no internet?)" 8 70
+        rm -f "$DUMP_FILE"
+        return 1
+    fi
+
+    # haha gross shell things
+    items=$(cat test.txt | sed 's, ,^,g')
+    set -- "Default" "Don't select a mirror"
+    for item in $items; do
+        for itp in $(echo $item | sed 's,\^, ,'); do
+            itp=$(echo $itp | sed 's,\^, ,g')
+            set -- "$@" "$itp"
+        done
+    done
+    unset item itp
+
+    ui_dialog --title "Mirror selection" \
+        --menu "${DLG_MENU_LABEL}" 19 80 19 \
+        "$@"
+    if [ $? -ne 0 ]; then
+        return 0
+    fi
+
+    config_set_answer MIRROR
+}
+
 menu_timezone() {
     area=
     while :; do
@@ -1011,6 +1041,7 @@ menu_entry() {
         --title "Chimera Linux installer" \
         --menu "${DLG_MENU_LABEL}" 10 70 0 \
         "Source" "Installation type (network or local)" \
+        "Mirror" "Select apk network mirror to use" \
         "Hostname" "System hostname" \
         "Timezone" "System timezone" \
         "RootPassword" "Root password" \
@@ -1030,7 +1061,8 @@ menu_entry() {
     fi
 
     case $(cat "$ANSWER_FILE") in
-        "Source") menu_source && config_has SOURCE && MENU_DEFAULT_ITEM="Hostname" ;;
+        "Source") menu_source && config_has SOURCE && MENU_DEFAULT_ITEM="Mirror" ;;
+        "Mirror") menu_mirror && config_has MIRROR && MENU_DEFAULT_ITEM="Hostname" ;;
         "Hostname") menu_hostname && config_has HOSTNAME && MENU_DEFAULT_ITEM="Timezone" ;;
         "Timezone") menu_timezone && config_has TIMEZONE && MENU_DEFAULT_ITEM="RootPassword" ;;
         "RootPassword") menu_password root ROOT_PASSWORD && config_has ROOT_PASSWORD && MENU_DEFAULT_ITEM="UserAccount" ;;
