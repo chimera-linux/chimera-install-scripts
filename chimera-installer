@@ -811,6 +811,7 @@ menu_install() {
         # clear the bootstrap partition if we have one...
         if config_has BOOTLOADER_OFPART; then
             ofpart=$(config_get BOOTLOADER_OFPART)
+            macpart=
             if [ ! -b "$ofpart" ]; then
                 # should not happen
                 ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} bootstrap partition is not a block device" 8 70
@@ -824,6 +825,13 @@ menu_install() {
             case "$(config_get PPC_FLAVOR)" in
                 mac)
                     hformat -l bootstrap "$ofpart"
+                    macpart="${sysroot}/.apple_bootstrap"
+                    mkdir -p "$macpart"
+                    mount -t hfs "$ofpart" "$macpart"
+                    if [ $? -ne 0 ]; then
+                        ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to mount Apple_Bootstrap" 8 70
+                        die
+                    fi
                     ;;
             esac
         else
@@ -855,7 +863,11 @@ menu_install() {
                 set -- --target=$(config_get GRUB_TARGET)
                 # esp directory if we have it
                 if [ -n "$esp" ]; then
-                    set -- "$@" --efi-directory="$esp"
+                    set -- "$@" --removable --efi-directory="$esp"
+                fi
+                # macppc directory if we have it
+                if [ -n "$macpart" ]; then
+                    set -- "$@" --no-nvram --macppc-directory="$macpart"
                 fi
                 # device if we have it, at the end
                 if [ -n "$ofpart" ]; then
@@ -869,7 +881,26 @@ menu_install() {
                 ui_programbox "Installing bootloader..." chimera-chroot grub-install "$@"
                 if [ $? -ne 0 ]; then
                     ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to install bootloader" 8 70
+                    if [ -n "$macpart" ]; then
+                        umount "$macpart"
+                    fi
                     die
+                fi
+                # for macs, perform additional blessing
+                if [ -n "$macpart" ]; then
+                    umount "$macpart"
+                    rmdir "$macpart"
+                    hmount "$ofpart"
+                    if [ $? -ne 0 ]; then
+                        ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to hmount the bootstrap partition" 8 70
+                        # don't die here, just let the user fix it after
+                    else
+                        hattrib -t tbxi -c UNIX :System:Library:CoreServices:BootX && hattrib -b :System:Library:CoreServices
+                        if [ $? -ne 0 ]; then
+                            ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to bless the bootstrap partition" 8 70
+                        fi
+                        humount
+                    fi
                 fi
             else
                 # we still need a grub dir
