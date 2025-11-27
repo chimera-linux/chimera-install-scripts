@@ -629,6 +629,13 @@ menu_install() {
         die
     fi
 
+    # normalize
+    sysroot=$(findmnt -no TARGET "$sysroot")
+    if [ "$sysroot" = "/" ]; then
+        ui_dialog --msgbox "${DLG_BOLD}System root is incorrectly configured.${DLG_RESET}" 8 7O
+        die
+    fi
+
     # for EFI systems, ensure there is a valid ESP
     if config_is TYPE efi; then
         esp=
@@ -683,6 +690,29 @@ menu_install() {
         fi
         unset espdev
         unset esptp
+        # normalize
+        esp=$(findmnt -no TARGET "$esp")
+    fi
+
+    # for systemd-boot and separate /boot ensure it's xbootldr and vfat
+    if mountpoint -q "${sysroot}/boot" > dev/null 2>&1 && config_is BOOTLOADER systemd && [ "$esp" != "${sysroot}/boot" ]; then
+        bootfs=$(findmnt -ln -o FSTYPE "${sysroot}/boot")
+        if [ "$bootfs" != "vfat" ]; then
+            ui_dialog --msgbox "${DLG_BOOT}XBOOTLDR partition must be FAT32.${DLG_RESET}" 8 70
+            die
+        fi
+        unset bootfs
+        bootdev=$(findmnt -ln -o SOURCE "${sysroot}/boot")
+        boottp=$(lsblk -n -o PARTTYPE "$bootdev")
+        if [ "$boottp" != "bc13c2ff-59e6-4262-a352-b275fd6f7172" ]; then
+            ui_dialog --msgbox "${DLG_BOLD}XBOOTLDR partition must be Linux extended boot.${DLG_RESET}" 8 70
+            die
+        fi
+        unset bootdev
+        unset boottp
+        bootmnt=$(findmnt -no TARGET "${sysroot}/boot")
+    else
+        bootmnt=
     fi
 
     # also verify there is no separate /usr partition
@@ -695,6 +725,10 @@ menu_install() {
         ui_programbox "Bootstrapping system..." chimera-bootstrap -l "$sysroot"
     else
         ui_programbox "Installing target packages..." chimera-bootstrap "$sysroot"
+    fi
+    if [ $? -ne 0 ]; then
+        ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} system bootstrap failed" 8 70
+        die
     fi
 
     ui_infobox "" "Applying settings..." 4 60
@@ -741,11 +775,28 @@ menu_install() {
             esac
         fi
 
-        # install logic for each
-        case $(config_get BOOTLOADER) in
-            grub) menu_install_grub ;;
-            systemd) menu_install_systemd_boot ;;
-        esac
+        if config_is BOOTLOADER systemd; then
+            # we're validated already, build up the arguments
+            set -- --esp-path "$esp"
+            # if using xbootldr, pass that too
+            if [ -n "$bootmnt" ]; then
+                set -- "$@" --boot-path "$bootmnt"
+            fi
+            # and do it
+            ui_programbox "Installing bootloader..." chimera-chroot bootctl "$@" install
+            if [ $? -ne 0 ]; then
+                ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to install bootloader" 8 70
+                die
+            fi
+            # also generate entries
+            ui_programbox "Generating boot entries..." chimera-chroot gen-systemd-boot
+            if [ $? -ne 0 ]; then
+                ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to generate boot entries" 8 70
+                die
+            fi
+        elif config_is BOOTLOADER grub; then
+            # TODO
+        fi
     fi
 
     while :; do
