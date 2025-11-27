@@ -533,18 +533,15 @@ ensure_filesystems() {
 menu_sysroot() {
     sysroot=$(config_get SYSROOT)
     if [ -z "$sysroot" ]; then
-        sysroot="auto"
+        sysroot="/mnt/root"
     fi
     while :; do
         ui_dialog --inputbox "Please enter the system root mount.\n\n
-This is where the system will be installed and must either be\n
-'auto' or an existing mount point.\n\n
-Changing this is mainly useful if you have a pre-existing mount\n
-hierarchy and don't wish to let the installer do the mounting\n
-(such as for ZFS installations)." 14 70 "$sysroot"
+This is where the system will be installed and must be set to\n
+a valid mount point (the structure will be validated)." 14 70 "$sysroot"
         if [ $? -eq 0 ]; then
             sysroot=$(cat "$ANSWER_FILE")
-            if [ "$sysroot" != "auto" ] && ! mountpoint -q "$sysroot"; then
+            if ! mountpoint -q "$sysroot"; then
                 ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} the system root is invalid" 8 70
                 continue
             fi
@@ -727,15 +724,13 @@ menu_install() {
         die
     fi
 
-    # TODO: create filesystems here
-
-    sysroot=$(config_get SYSROOT)
-    if [ -z "$sysroot" -o "$sysroot" = "auto" ]; then
-        sysroot="/mnt/root"
+    if ! config_has SYSROOT; then
+        ui_dialog --msgbox "${DLG_BOLD}You have not set the install system root.${DLG_RESET}" 8 70
+        die
     fi
 
     if ! mountpoint -q "$sysroot" > /dev/null 2>&1; then
-        ui_dialog --msgbox "${DLG_BOLD}System root has not been configured yet.${DLG_RESET}" 8 70
+        ui_dialog --msgbox "${DLG_BOLD}System root does not point to a valid mount.${DLG_RESET}" 8 70
         die
     fi
 
@@ -761,6 +756,8 @@ menu_install() {
 
     if config_has USERNAME; then
         useradd -R "$sysroot" -m -c "$(config_get FULLNAME)" "$(config_get USERNAME)"
+        # default user has doas rights
+        usermod -R "$sysroot" -a -G wheel "$(config_get USERNAME)"
         echo "$(config_get USERNAME):$(config_get PASSWORD)" | chpasswd -R "$sysroot" -c SHA512
     fi
 
@@ -828,8 +825,8 @@ menu_entry() {
         "Hostname" "System hostname" \
         "Timezone" "System timezone" \
         "RootPassword" "Root password" \
-        "UserAccount" "Your user name and password" \
-        "Filesystems" "Arrange the file systems" \
+        "UserAccount" "Your user name and password (admin account)" \
+        #"Filesystems" "Arrange the file systems" \
         "SystemRoot" "Set the target path for bootstrap" \
         "Bootloader" "Select the bootloader to use" \
         "Install" "Perform the installation" \
@@ -847,8 +844,8 @@ menu_entry() {
         "Hostname") menu_hostname && config_has HOSTNAME && MENU_DEFAULT_ITEM="Timezone" ;;
         "Timezone") menu_timezone && config_has TIMEZONE && MENU_DEFAULT_ITEM="RootPassword" ;;
         "RootPassword") menu_password root ROOT_PASSWORD && config_has ROOT_PASSWORD && MENU_DEFAULT_ITEM="UserAccount" ;;
-        "UserAccount") menu_user_account && config_has USERNAME && MENU_DEFAULT_ITEM="Filesystems" ;;
-        "Filesystems") menu_filesystems && config_has ROOTDEV && MENU_DEFAULT_ITEM="SystemRoot" ;;
+        "UserAccount") menu_user_account && config_has USERNAME && MENU_DEFAULT_ITEM="SystemRoot" ;;
+        #"Filesystems") menu_filesystems && config_has ROOTDEV && MENU_DEFAULT_ITEM="SystemRoot" ;;
         "SystemRoot") menu_sysroot && config_has SYSROOT && MENU_DEFAULT_ITEM="Bootloader" ;;
         "Bootloader") menu_bootloader && config_has BOOTLOADER && MENU_DEFAULT_ITEM="Install" ;;
         "Install") menu_install ;;
