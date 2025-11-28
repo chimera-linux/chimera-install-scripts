@@ -1072,6 +1072,12 @@ The generated file will only work out of the box for basic setups." 12 70
         echo "$(config_get USERNAME):$(config_get PASSWORD)" | chpasswd -R "$sysroot" -c SHA512
     fi
 
+    ui_programbox "Regenerating initramfs..." chimera-chroot update-initramfs -c -k all
+    if [ $? -ne 0 ]; then
+        ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to regenerate initramfs" 8 70
+        die
+    fi
+
     if config_has BOOTLOADER && ! config_is BOOTLOADER none; then
         ui_infobox "" "Installing bootloader..." 4 60
 
