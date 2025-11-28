@@ -22,9 +22,8 @@ config_set() {
 }
 
 config_set_answer() {
-    EVAL=$(cat "$ANSWER_FILE")
+    local EVAL=$(cat "$ANSWER_FILE")
     eval export INSTALL_CONFIG_${1}="$EVAL"
-    unset EVAL
 }
 
 config_is() {
@@ -36,11 +35,11 @@ config_has() {
 }
 
 config_load() {
+    local evar
     for evar in $(grep "^INSTALL_CONFIG_" "$1"); do
-        EKEY=${evar%%=*}
-        EVAL=${evar#*=}
+        local EKEY=${evar%%=*}
+        local EVAL=${evar#*=}
         eval export $EKEY="$EVAL"
-        unset EKEY EVAL
     done
 }
 
@@ -65,6 +64,7 @@ die() {
 }
 
 get_drives() {
+    local dev size sectsz sizegb
     # matches physical drives (SATA, NVMe etc.)
     for dev in $(ls /sys/block | grep -E '^([sv]|xv)d|mmcblk|nvme'); do
         echo "/dev/${dev}"
@@ -73,10 +73,10 @@ get_drives() {
         sizegb=$((${size} * ${sectsz} / 1024 / 1024 / 1024))
         echo "size:${sizegb},raw_size:${size},sector_size:${sectsz}"
     done
-    unset dev size sectsz sizegb
 }
 
 get_blkinfo() {
+    local fstype fssize
     if [ ! -b "$1" ]; then
         return
     fi
@@ -88,12 +88,10 @@ get_blkinfo() {
 
     echo "$1"
     echo "size:${fssize:-unknown},fstype:${fstype:-none}"
-
-    unset fstype
-    unset fssize
 }
 
 get_partitions() {
+    local diskn part
     # physical drives first
     set -- $(get_drives)
     while [ $# -ne 0 ]; do
@@ -118,17 +116,14 @@ get_partitions() {
         fi
         get_blkinfo "/dev/${part}"
     done
-
-    unset diskn part
 }
 
 gen_crypttab() {
-    csysroot="$1"
-    ctabout="$2"
+    local csysroot="$1"
+    local ctabout="$2"
+    local fstype fsbase nfsbase rootpart hasdevs cryptn discmax devn devt ndevname
 
     if [ -f "$ctabout" ]; then
-        unset csysroot
-        unset ctabout
         return 1
     fi
 
@@ -164,6 +159,7 @@ gen_crypttab() {
         # resolve slaves enough to reach the dm device on the raw device
         while :; do
             nfsbase=
+            local sl
             for sl in "/sys/block/${fsbase}/slaves/"*; do
                 if [ ! -d "$sl" ]; then
                     break
@@ -176,13 +172,11 @@ gen_crypttab() {
                         ;;
                 esac
             done
-            unset sl
             # didn't find a new base
             if [ -z "$nfsbase" ]; then
                 break
             fi
             fsbase="$nfsbase"
-            unset nfsbase
         done
         # save the mapper name, it's likely the crypt name
         cryptn=$(cat "/sys/block/${fsbase}/dm/name")
@@ -203,27 +197,19 @@ gen_crypttab() {
             continue
         fi
         fsbase="$nfsbase"
-        unset nfsbase
         # check if it's luks...
         fstype=$(blkid --match-tag TYPE --output value "/dev/$fsbase")
         if [ "$fstype" != "crypto_LUKS" ]; then
-            unset fstype
             continue
         fi
-        unset fstype
         case "$hasdevs" in
             *"/dev/${fsbase},"*)
-                unset cryptn
                 continue
                 ;;
         esac
         set -- "$@" "/dev/$fsbase" "$cryptn" "$rootpart"
         hasdevs="${hasdevs}/dev/${fsbase},"
-        unset cryptn
     done
-    unset fsbase
-    unset rootpart
-    unset hasdevs
 
     while [ $# -ne 0 ]; do
         # default params
@@ -233,7 +219,6 @@ gen_crypttab() {
         if [ "$discmax" -ne 0 ]; then
             params="${params},discard"
         fi
-        unset discmax
         # if this is for /, also include in initramfs
         # usually this is not needed but it is for e.g. zfs
         if [ "$3" = "/" ]; then
@@ -252,22 +237,16 @@ gen_crypttab() {
                     break
                 fi
             done
-            unset devn
             if [ -n "$ndevname" ]; then
                 devname="$ndevname"
-                unset ndevname
                 break
             fi
-            unset ndevname
         done
-        unset devt
         # and generate, this does not support keyfiles etc. so it's pretty basic
         echo "$2 $devname none $params" >> "$ctabout"
-        unset devname
         shift 3
     done
 
-    unset csysroot
     return 0
 }
 
@@ -308,19 +287,17 @@ ui_dialog() {
 }
 
 ui_infobox() {
-    titl="$1"
+    local titl="$1"
     shift
     dialog --colors --no-shadow \
         --backtitle "${DLG_BOLD}${DLG_WHITE}Chimera Linux installer${DLG_RESET}" \
         --aspect 20 --title "$titl" --infobox "$@"
-    unset titl
 }
 
 ui_programbox() {
-    titl="$1"
+    local titl="$1"
     shift
     stdbuf -oL -- "$@" | ui_dialog --title "$titl" --programbox 24 80
-    unset titl
 }
 
 # command line options
@@ -468,6 +445,8 @@ menu_hostname() {
 }
 
 menu_mirror() {
+    local item itp
+
     rm -f "$DUMP_FILE"
     fetch -o "$DUMP_FILE" "https://repo.chimera-linux.org/mirrors.txt"
     if [ $? -ne 0 ]; then
@@ -477,7 +456,7 @@ menu_mirror() {
     fi
 
     # haha gross shell things
-    items=$(cat test.txt | sed 's, ,^,g')
+    items=$(cat "$DUMP_FILE" | sed 's, ,^,g')
     set -- "Default" "Don't select a mirror"
     for item in $items; do
         for itp in $(echo $item | sed 's,\^, ,'); do
@@ -485,7 +464,6 @@ menu_mirror() {
             set -- "$@" "$itp"
         done
     done
-    unset item itp
 
     ui_dialog --title "Mirror selection" \
         --menu "${DLG_MENU_LABEL}" 19 80 19 \
@@ -498,7 +476,7 @@ menu_mirror() {
 }
 
 menu_timezone() {
-    area=
+    local area loc
     while :; do
         ui_dialog --title "Area selection" ${area:+--default-item $area} \
             --menu "${DLG_MENU_LABEL}" 19 70 19 \
@@ -514,7 +492,6 @@ menu_timezone() {
             "Pacific" "Pacific"
         if [ $? -ne 0 ]; then
             # back without setting anything
-            unset area
             return 0
         fi
         # display the location selector
@@ -524,7 +501,6 @@ menu_timezone() {
             loc=${loc##*/}
             set -- "$@" "$loc" "$loc"
         done
-        unset loc
         ui_dialog --title "Location selection" \
             --menu "${DLG_MENU_LABEL}" 19 70 19 "$@"
         if [ $? -ne 0 ]; then
@@ -533,21 +509,18 @@ menu_timezone() {
         fi
         loc=$(cat "$ANSWER_FILE")
         config_set TIMEZONE "${area}/${loc}"
-        unset area loc
         return 0
     done
 }
 
 menu_password() {
-    answer1=
-    answer2=
+    local answer1 answer2 descr
     while :; do
         if [ -n "$answer1" -a -z "$answer2" ]; then
             descr=" again"
         fi
         ui_dialog --insecure --passwordbox "Enter the password for user "$1"${descr}" 8 60
         if [ $? -ne 0 ]; then
-            unset answer1 answer2 descr
             return
         fi
         if [ -z "$answer1" ]; then
@@ -558,12 +531,13 @@ menu_password() {
         if [ -n "$answer1" -a -n "$answer2" ]; then
             if [ "$answer1" != "$answer2" ]; then
                 ui_infobox "Invalid password" "Passwords do not match." 6 60
-                unset answer1 answer2 descr
+                answer1=
+                answer2=
+                descr=
                 sleep 2
                 continue
             fi
             config_set "$2" "$answer1"
-            unset answer1 answer2 descr
             break
         fi
     done
@@ -594,7 +568,7 @@ menu_user_account() {
 }
 
 menu_sysroot() {
-    sysroot=$(config_get SYSROOT)
+    local sysroot=$(config_get SYSROOT)
     if [ -z "$sysroot" ]; then
         sysroot="/mnt/root"
     fi
@@ -609,10 +583,8 @@ a valid mount point (the structure will be validated)." 14 70 "$sysroot"
                 continue
             fi
             config_set SYSROOT "$sysroot"
-            unset sysroot
             break
         else
-            unset sysroot
             return
         fi
     done
@@ -643,7 +615,7 @@ menu_packages() {
 }
 
 menu_bootloader_esp() {
-    espath=$(config_get BOOTLOADER_ESP)
+    local espath=$(config_get BOOTLOADER_ESP)
     if [ -z "$espath" ]; then
         espath="auto"
     fi
@@ -657,16 +629,15 @@ Most configurations with one ESP don't have to specify anything." 12 70 "$espath
             if [ -n "$1" ]; then
                 config_set BOOTLOADER "$1"
             fi
-            unset espath
             break
         else
-            unset espath
             return
         fi
     done
 }
 
 menu_bootloader_mbr() {
+    local diskn bdevs bdev
     # we only care about physical drives, because the MBR can only be
     # installed to a whole physical disk, and it has to be MBR
     set -- $(get_drives)
@@ -680,8 +651,6 @@ menu_bootloader_mbr() {
         fi
     done
 
-    unset diskn
-
     # sorted list of bootstrap drives
     set -- $(echo $bdevs | tr ' ' '\n' | sort)
     bdevs="$@"
@@ -689,7 +658,6 @@ menu_bootloader_mbr() {
     # ensure there is at least one
     if [ $# -eq 0 ]; then
         ui_dialog --msgbox "No valid MBR drives have been found." 8 70
-        unset bdevs
         return 1
     fi
 
@@ -698,8 +666,6 @@ menu_bootloader_mbr() {
     for bdev in $bdevs; do
         set -- "$@" "$bdev" "$bdev"
     done
-    unset bdev
-    unset bdevs
 
     ui_dialog --title "Select the disk to install the bootloader MBR" \
         --menu "${DLG_MENU_LABEL}" 14 70 0 "$@"
@@ -710,10 +676,10 @@ menu_bootloader_mbr() {
     bdev=$(cat "$ANSWER_FILE")
     config_set BOOTLOADER_MBR "$bdev"
     config_set BOOTLOADER "$1"
-    unset bdev
 }
 
 menu_bootloader_ofpart() {
+    local bdev bdevs nbdevs btype diskn
     # we only care about physical drives, because the boootstrap partition
     # cannot be present on device mapper or on mdadm or anything like that
     #
@@ -735,7 +701,6 @@ menu_bootloader_ofpart() {
                 if [ -n "$nbdevs" ]; then
                     bdevs="$bdevs $nbdevs"
                 fi
-                unset nbdevs
                 ;;
             chrp)
                 # for chrp, make sure the disk is MBR or GPT
@@ -748,7 +713,6 @@ menu_bootloader_ofpart() {
                             if [ "$btype" = "0x41" ]; then
                                 bdevs="$bdevs /dev/${part}"
                             fi
-                            unset btype
                         done
                         ;;
                     gpt)
@@ -759,7 +723,6 @@ menu_bootloader_ofpart() {
                             if [ "$btype" = "9e1a2d38-c612-4316-aa26-8b49521e5a8b" ]; then
                                 bdevs="$bdevs /dev/${part}"
                             fi
-                            unset btype
                         done
                         ;;
                     *) ;;
@@ -770,8 +733,6 @@ menu_bootloader_ofpart() {
         esac
     done
 
-    unset diskn
-
     # sorted list of bootstrap partitions
     set -- $(echo $bdevs | tr ' ' '\n' | sort)
     bdevs="$@"
@@ -779,7 +740,6 @@ menu_bootloader_ofpart() {
     # ensure there is at least one
     if [ $# -eq 0 ]; then
         ui_dialog --msgbox "No valid bootstrap partition(s) have been found." 8 70
-        unset bdevs
         return 1
     fi
 
@@ -788,8 +748,6 @@ menu_bootloader_ofpart() {
     for bdev in $bdevs; do
         set -- "$@" "$bdev" "$bdev"
     done
-    unset bdev
-    unset bdevs
 
     ui_dialog --title "Select the bootstrap partition to install the bootloader" \
         --menu "${DLG_MENU_LABEL}" 14 70 0 "$@"
@@ -800,7 +758,6 @@ menu_bootloader_ofpart() {
     bdev=$(cat "$ANSWER_FILE")
     config_set BOOTLOADER_OFPART "$bdev"
     config_set BOOTLOADER "$1"
-    unset bdev
 }
 
 menu_bootloader_grub() {
@@ -866,6 +823,8 @@ menu_bootloader() {
 }
 
 menu_install() {
+    local pttype sysroot espfs espdev esptp bootfs bootdev boottp
+
     if ! config_has ROOT_PASSWORD; then
         ui_dialog --msgbox "${DLG_BOLD}You have not yet configured the root password.${DLG_RESET}" 8 70
         die
@@ -909,7 +868,6 @@ menu_install() {
                     # found an esp!
                     esp=$(findmnt -ln -o TARGET "$1")
                 fi
-                unset pttype
                 shift 2
             done
         else
@@ -926,7 +884,6 @@ menu_install() {
             ui_dialog --msgbox "${DLG_BOLD}EFI partition must be FAT32.${DLG_RESET}" 8 70
             die
         fi
-        unset espfs
         # the ensure it's a device that esp can be on
         espdev=$(findmnt -ln -o SOURCE "$esp")
         case "$espdev" in
@@ -942,8 +899,6 @@ menu_install() {
             ui_dialog --msgbox "${DLG_BOLD}EFI partition has an incorrect partition type.${DLG_RESET}" 8 70
             die
         fi
-        unset espdev
-        unset esptp
         # normalize
         esp=$(findmnt -no TARGET "$esp")
     else
@@ -957,15 +912,12 @@ menu_install() {
             ui_dialog --msgbox "${DLG_BOLD}XBOOTLDR partition must be FAT32.${DLG_RESET}" 8 70
             die
         fi
-        unset bootfs
         bootdev=$(findmnt -ln -o SOURCE "${sysroot}/boot")
         boottp=$(lsblk -n -o PARTTYPE "$bootdev")
         if [ "$boottp" != "bc13c2ff-59e6-4262-a352-b275fd6f7172" ]; then
             ui_dialog --msgbox "${DLG_BOLD}XBOOTLDR partition must be Linux extended boot.${DLG_RESET}" 8 70
             die
         fi
-        unset bootdev
-        unset boottp
         bootmnt=$(findmnt -no TARGET "${sysroot}/boot")
     else
         bootmnt=
@@ -1205,8 +1157,6 @@ Do you wish to reboot now?" 8 60
     if [ $? -eq 0 ]; then
         poweroff
     fi
-
-    unset sysroot
 }
 
 menu_entry() {
