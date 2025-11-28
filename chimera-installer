@@ -122,6 +122,155 @@ get_partitions() {
     unset diskn part
 }
 
+gen_crypttab() {
+    csysroot="$1"
+    ctabout="$2"
+
+    if [ -f "$ctabout" ]; then
+        unset csysroot
+        unset ctabout
+        return 1
+    fi
+
+    set --
+
+    # keep track of devices we already encountered
+    hasdevs=
+
+    for fsbase in $(findmnt -Rln -o SOURCE "$csysroot"); do
+        # filter devices only
+        case "$fsbase" in
+            /dev/*) ;;
+            *) continue ;;
+        esac
+        # only block devices to filter out bracketed stuff
+        if [ ! -b "$fsbase" ]; then
+            continue
+        fi
+        # see if it's root partition
+        rootpart=$(findmnt -rno TARGET "$fsbase" | head -n1)
+        # resolve to raw device
+        fsbase=$(readlink -f "$fsbase")
+        fsbase=${fsbase##*/}
+        # only consider device mapper
+        case "$fsbase" in
+            dm-*) ;;
+            *) continue ;;
+        esac
+        # this should never really fail but just in case...
+        if [ ! -d "/sys/block/${fsbase}" ]; then
+            continue
+        fi
+        # resolve slaves enough to reach the dm device on the raw device
+        while :; do
+            nfsbase=
+            for sl in "/sys/block/${fsbase}/slaves/"*; do
+                if [ ! -d "$sl" ]; then
+                    break
+                fi
+                case ${sl##*/} in
+                    # slave is dm-*, move on...
+                    dm-*)
+                        nfsbase=${sl##*/}
+                        break
+                        ;;
+                esac
+            done
+            unset sl
+            # didn't find a new base
+            if [ -z "$nfsbase" ]; then
+                break
+            fi
+            fsbase="$nfsbase"
+            unset nfsbase
+        done
+        # save the mapper name, it's likely the crypt name
+        cryptn=$(cat "/sys/block/${fsbase}/dm/name")
+        # now resolve to the raw device via slaves again
+        nfsbase=
+        for sl in "/sys/block/${fsbase}/slaves/"*; do
+            if [ ! -d "$sl" ]; then
+                break
+            fi
+            sl=${sl##*/}
+            if [ ! -b "/dev/${sl}" ]; then
+                continue
+            fi
+            nfsbase="$sl"
+            break
+        done
+        if [ -z "$nfsbase" ]; then
+            continue
+        fi
+        fsbase="$nfsbase"
+        unset nfsbase
+        # check if it's luks...
+        fstype=$(blkid --match-tag TYPE --output value "/dev/$fsbase")
+        if [ "$fstype" != "crypto_LUKS" ]; then
+            unset fstype
+            continue
+        fi
+        unset fstype
+        case "$hasdevs" in
+            *"/dev/${fsbase},"*)
+                unset cryptn
+                continue
+                ;;
+        esac
+        set -- "$@" "/dev/$fsbase" "$cryptn" "$rootpart"
+        hasdevs="${hasdevs}/dev/${fsbase},"
+        unset cryptn
+    done
+    unset fsbase
+    unset rootpart
+    unset hasdevs
+
+    while [ $# -ne 0 ]; do
+        # default params
+        params=luks
+        # if the device supports trim, let us trim the encrypted fs too
+        discmax=$(lsblk -bnrdD -o DISC_MAX "$1")
+        if [ "$discmax" -ne 0 ]; then
+            params="${params},discard"
+        fi
+        unset discmax
+        # if this is for /, also include in initramfs
+        # usually this is not needed but it is for e.g. zfs
+        if [ "$3" = "/" ]; then
+            params="${params},initramfs"
+        fi
+        # this name is raw, we want a stable value
+        devname="$1"
+        # try in this order, from best to worst
+        for devt in partlabel partuuid uuid; do
+            ndevname=
+            for devn in /dev/disk/by-$devt/*; do
+                [ -b "$devn" ] || continue
+                rawd=$(readlink -f "$devn")
+                if [ "$rawd" = "$devname" ]; then
+                    ndevname="$(echo $devt | tr '[:lower:]' '[:upper:]')=${devn##*/}"
+                    break
+                fi
+            done
+            unset devn
+            if [ -n "$ndevname" ]; then
+                devname="$ndevname"
+                unset ndevname
+                break
+            fi
+            unset ndevname
+        done
+        unset devt
+        # and generate, this does not support keyfiles etc. so it's pretty basic
+        echo "$2 $devname none $params" >> "$ctabout"
+        unset devname
+        shift 3
+    done
+
+    unset csysroot
+    return 0
+}
+
 # early checks
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -805,7 +954,7 @@ menu_install() {
     if mountpoint -q "${sysroot}/boot" > dev/null 2>&1 && config_is BOOTLOADER systemd && [ "$esp" != "${sysroot}/boot" ]; then
         bootfs=$(findmnt -ln -o FSTYPE "${sysroot}/boot")
         if [ "$bootfs" != "vfat" ]; then
-            ui_dialog --msgbox "${DLG_BOOT}XBOOTLDR partition must be FAT32.${DLG_RESET}" 8 70
+            ui_dialog --msgbox "${DLG_BOLD}XBOOTLDR partition must be FAT32.${DLG_RESET}" 8 70
             die
         fi
         unset bootfs
@@ -897,6 +1046,14 @@ menu_install() {
     ui_infobox "" "Applying settings..." 4 60
 
     genfstab -U "$sysroot" > "${sysroot}/etc/fstab"
+
+    if gen_crypttab "$sysroot" "${sysroot}/etc/crypttab"; then
+        ui_dialog --msgbox "${DLG_BOLD}Encrypted partitions have been found.${DLG_RESET}\n\n
+The installer has generated an '/etc/crypttab'.\n
+If you are using keyfiles, keyscripts, or need special parameters,\n
+you will need to modify this file later (and refresh initramfs).\n\n
+The generated file will only work out of the box for basic setups." 12 70
+    fi
 
     if config_has HOSTNAME; then
         config_get HOSTNAME > "${sysroot}/etc/hostname"
