@@ -344,7 +344,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         *)
-            usage "unknown option '$1'" >&2
+            usage "$@" "unknown option '$1'" >&2
             exit 1
             ;;
     esac
