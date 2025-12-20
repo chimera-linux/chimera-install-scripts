@@ -952,6 +952,9 @@ menu_install() {
         mirror=
     fi
 
+    # sanitize just in case, it has happened before
+    chmod 755 "$sysroot"
+
     if ! config_has SOURCE || config_is SOURCE "local"; then
         ui_programbox "Bootstrapping system..." chimera-bootstrap "$@" -l "$sysroot"
     else
