@@ -1087,10 +1087,10 @@ The generated file will only work out of the box for basic setups." 12 70
 
         if config_is BOOTLOADER systemd; then
             # we're validated already, build up the arguments
-            set -- --esp-path "/${esp#${sysroot}}"
+            set -- --esp-path "${esp#${sysroot}}"
             # if using xbootldr, pass that too
             if [ -n "$bootmnt" ]; then
-                set -- "$@" --boot-path "/${bootmnt#${sysroot}}"
+                set -- "$@" --boot-path "${bootmnt#${sysroot}}"
             fi
             # and do it
             ui_programbox "Installing bootloader..." chimera-chroot "$sysroot" bootctl "$@" install
@@ -1110,11 +1110,11 @@ The generated file will only work out of the box for basic setups." 12 70
                 set -- --target=$(config_get GRUB_TARGET)
                 # esp directory if we have it
                 if [ -n "$esp" ]; then
-                    set -- "$@" --removable --efi-directory="/${esp#${sysroot}}"
+                    set -- "$@" --removable --efi-directory="${esp#${sysroot}}"
                 fi
                 # macppc directory if we have it
                 if [ -n "$macpart" ]; then
-                    set -- "$@" --no-nvram --macppc-directory="/${macpart#${sysroot}}"
+                    set -- "$@" --no-nvram --macppc-directory="${macpart#${sysroot}}"
                 fi
                 # device if we have it, at the end
                 if [ -n "$ofpart" ]; then
