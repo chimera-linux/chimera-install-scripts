@@ -1037,7 +1037,7 @@ The generated file will only work out of the box for basic setups." 12 70
         ln -sf /usr/share/zoneinfo/$(config_get TIMEZONE) "${sysroot}/etc/localtime"
     fi
 
-    echo "root:$(config_get ROOT_PASSWDORD)" | chpasswd -R "$sysroot" -c SHA512
+    echo "root:$(config_get ROOT_PASSWORD)" | chpasswd -R "$sysroot" -c SHA512
 
     if config_has USERNAME; then
         useradd -R "$sysroot" -m -c "$(config_get FULLNAME)" "$(config_get USERNAME)"
