@@ -649,7 +649,8 @@ Most configurations with one ESP don't have to specify anything." 12 70 "$espath
 }
 
 menu_bootloader_mbr() {
-    local diskn bdevs bdev
+    local diskn bdevs bdev bootln
+    bootln="$1"
     # we only care about physical drives, because the MBR can only be
     # installed to a whole physical disk, and it has to be MBR
     set -- $(get_drives)
@@ -687,11 +688,12 @@ menu_bootloader_mbr() {
 
     bdev=$(cat "$ANSWER_FILE")
     config_set BOOTLOADER_MBR "$bdev"
-    config_set BOOTLOADER "$1"
+    config_set BOOTLOADER "$bootln"
 }
 
 menu_bootloader_ofpart() {
-    local bdev bdevs nbdevs btype diskn
+    local bdev bdevs nbdevs btype diskn bootln
+    bootln="$1"
     # we only care about physical drives, because the boootstrap partition
     # cannot be present on device mapper or on mdadm or anything like that
     #
@@ -769,7 +771,7 @@ menu_bootloader_ofpart() {
 
     bdev=$(cat "$ANSWER_FILE")
     config_set BOOTLOADER_OFPART "$bdev"
-    config_set BOOTLOADER "$1"
+    config_set BOOTLOADER "$bootln"
 }
 
 menu_bootloader_grub() {
