@@ -1177,7 +1177,7 @@ Do you wish to open a shell to perform additional tasks?" 8 60
     ui_dialog --yesno "${DLG_BOLD}The installation has finished.${DLG_RESET}\n
 Do you wish to reboot now?" 8 60
     if [ $? -eq 0 ]; then
-        poweroff
+        reboot
     fi
 }
 
