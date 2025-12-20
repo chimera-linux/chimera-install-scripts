@@ -124,7 +124,7 @@ gen_crypttab() {
     local fstype fsbase nfsbase rootpart hasdevs cryptn discmax devn devt ndevname
 
     if [ -f "$ctabout" ]; then
-        return 1
+        return 0
     fi
 
     set --
@@ -247,6 +247,10 @@ gen_crypttab() {
         shift 3
     done
 
+    if [ ! -f "$ctabout" ]; then
+        return 1
+    fi
+
     return 0
 }
 
@@ -297,7 +301,7 @@ ui_infobox() {
 ui_programbox() {
     local titl="$1"
     shift
-    stdbuf -oL -- "$@" | ui_dialog --title "$titl" --programbox 24 80
+    stdbuf -oL -- "$@" 2>&1 | ui_dialog --title "$titl" --programbox 24 80
 }
 
 # command line options
@@ -596,7 +600,7 @@ menu_kernel() {
         --menu "${DLG_MENU_LABEL}" 12 70 0 \
         "Stable" "Use the latest stable kernel." \
         "LTS" "Use the latest long-term support kernel." \
-        "None" "Don't choose a kernel here."
+        "None" "Don't choose a kernel here (e.g. local installations)."
 
     case $(cat "$ANSWER_FILE") in
         "Stable") config_set KERNEL stable ;;
@@ -906,7 +910,7 @@ menu_install() {
     fi
 
     # for systemd-boot and separate /boot ensure it's xbootldr and vfat
-    if mountpoint -q "${sysroot}/boot" > dev/null 2>&1 && config_is BOOTLOADER systemd && [ "$esp" != "${sysroot}/boot" ]; then
+    if mountpoint -q "${sysroot}/boot" > /dev/null 2>&1 && config_is BOOTLOADER systemd && [ "$esp" != "${sysroot}/boot" ]; then
         bootfs=$(findmnt -ln -o FSTYPE "${sysroot}/boot")
         if [ "$bootfs" != "vfat" ]; then
             ui_dialog --msgbox "${DLG_BOLD}XBOOTLDR partition must be FAT32.${DLG_RESET}" 8 70
@@ -963,13 +967,21 @@ menu_install() {
 
     # add bootloader to the list
     case $(config_get BOOTLOADER) in
-        systemd) extrapkgs="$extrapkgs systemd-boot" ;;
+        systemd)
+            if [ ! -f "${sysroot}/usr/bin/bootctl" ]; then
+                extrapkgs="$extrapkgs systemd-boot"
+            fi
+            ;;
         grub)
             if config_has GRUB_TARGET; then
-                extrapkgs="$extrapkgs grub-$(config_get GRUB_TARGET)"
+                if [ ! -f "${sysroot}/usr/lib/grub/$(config_get GRUB_TARGET)/kernel.img" ]; then
+                    extrapkgs="$extrapkgs grub-$(config_get GRUB_TARGET)"
+                fi
             else
                 # only tools
-                extrapkgs="$extrapkgs grub"
+                if [ ! -f "${sysroot}/usr/bin/grub-mkconfig" ]; then
+                    extrapkgs="$extrapkgs grub"
+                fi
             fi
             ;;
     esac
@@ -983,12 +995,12 @@ menu_install() {
     # only install stuff if we have anything
     set -- $extrapkgs
     if [ $# -ne 0 ]; then
-        ui_programbox "Updating package index..." chimera-chroot apk update
+        ui_programbox "Updating package index..." chimera-chroot "$sysroot" apk --no-interactive update
         if [ $? -ne 0 ]; then
             ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to update apk index" 8 70
             die
         fi
-        ui_programbox "Installing extra packages..." chimera-chroot apk add "$@"
+        ui_programbox "Installing extra packages..." chimera-chroot "$sysroot" apk --no-interactive add "$@"
         if [ $? -ne 0 ]; then
             ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to install extra packages" 8 70
             die
@@ -1024,7 +1036,7 @@ The generated file will only work out of the box for basic setups." 12 70
         echo "$(config_get USERNAME):$(config_get PASSWORD)" | chpasswd -R "$sysroot" -c SHA512
     fi
 
-    ui_programbox "Regenerating initramfs..." chimera-chroot update-initramfs -c -k all
+    ui_programbox "Regenerating initramfs..." chimera-chroot "$sysroot" update-initramfs -c -k all
     if [ $? -ne 0 ]; then
         ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to regenerate initramfs" 8 70
         die
@@ -1071,13 +1083,13 @@ The generated file will only work out of the box for basic setups." 12 70
                 set -- "$@" --boot-path "$bootmnt"
             fi
             # and do it
-            ui_programbox "Installing bootloader..." chimera-chroot bootctl "$@" install
+            ui_programbox "Installing bootloader..." chimera-chroot "$sysroot" bootctl "$@" install
             if [ $? -ne 0 ]; then
                 ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to install bootloader" 8 70
                 die
             fi
             # also generate entries
-            ui_programbox "Generating boot entries..." chimera-chroot gen-systemd-boot
+            ui_programbox "Generating boot entries..." chimera-chroot "$sysroot" gen-systemd-boot
             if [ $? -ne 0 ]; then
                 ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to generate boot entries" 8 70
                 die
@@ -1103,7 +1115,7 @@ The generated file will only work out of the box for basic setups." 12 70
                     set -- "$@" $(config_get BOOTLOADER_MBR)
                 fi
                 # and do it
-                ui_programbox "Installing bootloader..." chimera-chroot grub-install "$@"
+                ui_programbox "Installing bootloader..." chimera-chroot "$sysroot" grub-install "$@"
                 if [ $? -ne 0 ]; then
                     ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to install bootloader" 8 70
                     if [ -n "$macpart" ]; then
@@ -1132,7 +1144,7 @@ The generated file will only work out of the box for basic setups." 12 70
                 mkdir -p "${sysroot}/boot/grub"
             fi
             # generate grub config
-            ui_programbox "Generating boot entries..." chimera-chroot update-grub
+            ui_programbox "Generating boot entries..." chimera-chroot "$sysroot" update-grub
             if [ $? -ne 0 ]; then
                 ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to generate boot entries" 8 70
                 die
