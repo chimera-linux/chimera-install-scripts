@@ -1,7 +1,7 @@
 PREFIX ?= /usr
 BINDIR ?= $(PREFIX)/bin
 
-SCRIPTS = chimera-bootstrap chimera-chroot genfstab
+SCRIPTS = chimera-bootstrap chimera-chroot chimera-installer genfstab
 
 all:
 
