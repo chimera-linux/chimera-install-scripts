@@ -52,10 +52,13 @@ config_dump() {
 # for dialog
 ANSWER_FILE=$(mktemp /tmp/chimera-installer.XXXXXX || exit 1)
 DUMP_FILE=$(mktemp /tmp/chimera-installer-tmp.XXXXXX || exit 1)
+INSTALLER_FILE=$(mktemp /tmp/chimera-installer-sh.XXXXXX || exit 1)
+CONFIG_FILE=
 
 die() {
     rm -f "$ANSWER_FILE"
     rm -f "$DUMP_FILE"
+    rm -f "$INSTALLER_FILE"
     if [ -z "$1" ]; then
         exit 0
     fi
@@ -317,6 +320,7 @@ usage() {
     echo ""
     echo "  -h, --help         Show this listing."
     echo "  -c, --config CONF  Use the given configuration."
+    echo "  -N, --no-update    Don't try to update the installer."
 }
 
 while [ $# -gt 0 ]; do
@@ -332,8 +336,12 @@ while [ $# -gt 0 ]; do
             if [ ! -r "$2" ]; then
                 die "configuration file could not be read"
             fi
-            config_load "$2"
+            CONFIG_FILE="$2"
             shift 2
+            ;;
+        -N|--no-update)
+            SKIP_UPDATE_CHECK=1
+            shift
             ;;
         *)
             usage "unknown option '$1'" >&2
@@ -1228,8 +1236,32 @@ You will be given a variety of options allowing you to customize the setup.\n\n
 If you need more help, please refer to ${DLG_BOLD}https://chimera-linux.org/docs/${DLG_RESET}\n
 or one of our communication channels." 16 80
 
+if [ -z "$SKIP_UPDATE_CHECK" ]; then
+    ui_dialog --yesno "${DLG_BOLD}This installer is experimental.${DLG_RESET}\n
+Do you wish to fetch and run the latest available version? (needs network)?" 8 60
+    if [ $? -eq 0 ]; then
+        rm -f "$INSTALLER_FILE"
+        fetch -o "$INSTALLER_FILE" "https://raw.githubusercontent.com/chimera-linux/chimera-install-scripts/refs/heads/master/chimera-installer"
+        if [ $? -ne 0 ]; then
+            ui_dialog --msgbox "${DLG_BOLD}${DLG_RED}ERROR:${DLG_RESET} failed to fetch the installer (no internet?)" 8 70
+            rm -f "$INSTALLER_FILE"
+        else
+            set -- -N
+            if [ -n "$CONFIG_FILE" ]; then
+                set -- "$@" -c "$CONFIG_FILE"
+            fi
+            # rexec
+            exec /bin/sh "$INSTALLER_FILE" "$@"
+        fi
+    fi
+fi
+
+if [ -n "$CONFIG_FILE" ]; then
+    config_load "$CONFIG_FILE"
+fi
+
 while :; do
     menu_entry
 done
 
-exit 0
+die
